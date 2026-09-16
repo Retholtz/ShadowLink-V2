@@ -1,0 +1,9 @@
+{
+  "active_profile": "Default",
+  "auto_switch": true,
+  "start_minimized": false,
+  "load_on_startup": false,
+  "dark_mode": true,
+  "osd_position": "Bottom Right",
+  "scan_interval_ms": 5000
+}
