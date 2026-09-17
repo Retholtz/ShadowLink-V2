@@ -103,12 +103,41 @@ class TestMainWindow(unittest.TestCase):
         mgr = hardware.ControllerManager(p)
         win = gui.main_window.MainWindow(mgr)
         self.assertIsNotNone(win)
+        self.assertIn("v1.1", win.windowTitle())
         self.assertEqual(win.main_tabs.count(), 6)  # 5 layers + 1 settings
         self.assertEqual(len(win.layer_ui_rows), 5)
         # Check window and system tray icon are loaded
         self.assertFalse(win.windowIcon().isNull())
         self.assertFalse(win.tray_icon.icon().isNull())
+        self.assertIn("v1.1", win.tray_icon.toolTip())
         self.assertIsNotNone(win.create_shortcut_btn)
+        self.assertIsNotNone(win.update_btn)
+        self.assertEqual(win.update_btn.text(), "Check for Updates")
+
+
+class TestUpdateDialogs(unittest.TestCase):
+    def test_update_available_dialog(self):
+        from gui.update_dialog import UpdateAvailableDialog
+        from updater import ReleaseInfo
+
+        rel = ReleaseInfo(
+            tag_name="v1.2",
+            version_str="1.2",
+            version_tuple=(1, 2),
+            title="ShadowLink 1.2",
+            notes="New cool features\nBug fixes",
+            html_url="https://github.com/Retholtz/ShadowLink-V2/releases",
+            asset_name="ShadowLink.exe",
+            download_url="https://github.com/test",
+            asset_size=1024 * 1024 * 20,
+            is_zip=False,
+            published_at="2026-09-17T00:00:00Z",
+        )
+        dialog = UpdateAvailableDialog(rel)
+        self.assertIn("v1.2", dialog.windowTitle())
+        self.assertEqual(dialog.release_info.version_str, "1.2")
+        self.assertIn("Bug fixes", dialog.notes_browser.toPlainText())
+        dialog.close()
 
 
 class TestDesktopIntegration(unittest.TestCase):

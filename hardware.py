@@ -68,6 +68,27 @@ def is_raikiri_paddle_device(device_info: dict) -> bool:
     return (up & 0xFF) == 0xC3 or hex(up).lower().endswith("c3")
 
 
+def is_valid_paddle_packet(data: list[int] | bytes) -> bool:
+    """
+    Validates that an incoming HID report is a genuine ROG Raikiri paddle report.
+    Rejects malformed packets or multi-byte Aura RGB / firmware data sharing Report ID 0xB3.
+    """
+    if not data or len(data) < 9:
+        return False
+    if (data[0] & 0xFF) != REPORT_ID_PADDLES:
+        return False
+    is_alt_mode = (len(data) > 3 and data[3] == 2)
+    if not is_alt_mode:
+        # In normal mode, paddle switch bytes (5, 6, 7, 8) must be binary 0 or 1
+        if data[5] not in (0, 1) or data[6] not in (0, 1) or data[7] not in (0, 1) or data[8] not in (0, 1):
+            return False
+    else:
+        # In alt mode, Command (5) and Library (6) switches must be binary 0 or 1
+        if data[5] not in (0, 1) or data[6] not in (0, 1):
+            return False
+    return True
+
+
 class ControllerManager:
     """
     Manages communication with ASUS ROG controller paddles and standard inputs.
@@ -128,6 +149,7 @@ class ControllerManager:
         return self.profile.layers[0]
 
     def set_profile(self, new_profile: Profile) -> None:
+        self._cancel_and_release_all_paddles()
         self.profile = new_profile
         # Reset to first enabled layer
         for idx, layer in enumerate(self.profile.layers):
@@ -244,6 +266,7 @@ class ControllerManager:
         prev_debounced_s4 = prev_debounced_cmd = prev_debounced_lib = False
 
         off_delay_sec = 0.020  # 20ms microswitch debounce on release
+        last_valid_paddle_time = 0.0
 
         while self._running:
             if not self._is_hid_connected or self._hid_device is None:
@@ -256,28 +279,45 @@ class ControllerManager:
 
                 now = time.time()
                 if data and len(data) > 0:
-                    report_id = data[0] & 0xFF
-                    if report_id == REPORT_ID_PADDLES:
+                    if is_valid_paddle_packet(data):
                         self.last_hid_data_time = now
+                        last_valid_paddle_time = now
                         is_alt_mode = (len(data) > 3 and data[3] == 2)
 
-                        if len(data) > 8:
-                            s1 = (not is_alt_mode) and (data[8] == 1)
-                            s2 = (not is_alt_mode) and (data[6] == 1)
-                            s3 = (not is_alt_mode) and (data[5] == 1)
-                            s4 = (not is_alt_mode) and (data[7] == 1)
+                        s1 = (not is_alt_mode) and (data[8] == 1)
+                        s2 = (not is_alt_mode) and (data[6] == 1)
+                        s3 = (not is_alt_mode) and (data[5] == 1)
+                        s4 = (not is_alt_mode) and (data[7] == 1)
 
-                            s_cmd = is_alt_mode and (data[5] == 1)
-                            s_lib = is_alt_mode and (data[6] == 1)
+                        s_cmd = is_alt_mode and (data[5] == 1)
+                        s_lib = is_alt_mode and (data[6] == 1)
                 elif data is None:
                     # Device disconnected
                     logger.warning("HID device disconnected during read")
+                    self._cancel_and_release_all_paddles()
+                    s1 = s2 = s3 = s4 = s_cmd = s_lib = False
+                    prev_debounced_s1 = prev_debounced_s2 = prev_debounced_s3 = False
+                    prev_debounced_s4 = prev_debounced_cmd = prev_debounced_lib = False
                     with self._hid_lock:
                         self._is_hid_connected = False
                         if self._hid_device:
-                            self._hid_device.close()
+                            try:
+                                self._hid_device.close()
+                            except Exception:
+                                pass
                             self._hid_device = None
                     continue
+
+                # Safety release: if a button is marked held but no report received for >3.0s
+                # (e.g. controller was abruptly switched off or wireless dropped while held), release it cleanly
+                if (s1 or s2 or s3 or s4 or s_cmd or s_lib) and last_valid_paddle_time > 0 and (now - last_valid_paddle_time) > 3.0:
+                    s1 = s2 = s3 = s4 = s_cmd = s_lib = False
+
+                # If controller is sleeping or off, ensure inputs do not latch
+                if self.controller_link_status == DeviceStatus.DISCONNECTED:
+                    if s1 or s2 or s3 or s4 or s_cmd or s_lib:
+                        s1 = s2 = s3 = s4 = s_cmd = s_lib = False
+                        self._cancel_and_release_all_paddles()
 
                 # Debouncing: high updates timestamp, low holds for off_delay_sec
                 if s1: last_m1_time = now
@@ -337,7 +377,6 @@ class ControllerManager:
                     or (t1 == "None" and t2 != "None")
                     or (t1 != "None" and t1 == t2)
                 )
-                single_toggle_btn = t1 if t1 != "None" else t2
 
                 if not is_single_toggle and t1 != "None" and t2 != "None":
                     is_combo_triggered = t1_pressed and t2_pressed
@@ -358,8 +397,6 @@ class ControllerManager:
                 if is_combo_triggered:
                     if t1 != "None": consumed.add(t1)
                     if t2 != "None": consumed.add(t2)
-                elif is_single_toggle and single_toggle_btn != "None":
-                    consumed.add(single_toggle_btn)
 
                 cl = self.current_layer
 
@@ -451,6 +488,10 @@ class ControllerManager:
             except Exception as e:
                 logger.error(f"Error in Raikiri reading loop: {e}", exc_info=True)
                 self.last_connection_error = f"HID read error: {e}"
+                self._cancel_and_release_all_paddles()
+                s1 = s2 = s3 = s4 = s_cmd = s_lib = False
+                prev_debounced_s1 = prev_debounced_s2 = prev_debounced_s3 = False
+                prev_debounced_s4 = prev_debounced_cmd = prev_debounced_lib = False
                 with self._hid_lock:
                     self._is_hid_connected = False
                     if self._hid_device:
@@ -554,37 +595,48 @@ class ControllerManager:
                 recent_hid = (now - self.last_hid_data_time) < 2.5
                 recent_xinput = (now - self.last_xinput_data_time) < 2.5
 
-                devices = find_raikiri_hid_devices()
-                dongle_present = len(devices) > 0
+                # If HID device is not opened, attempt to connect to paddle interface
+                if not self._is_hid_connected:
+                    devices = find_raikiri_hid_devices()
+                    dongle_present = len(devices) > 0
 
-                if dongle_present:
+                    if dongle_present:
+                        self.last_dongle_seen_time = now
+                        self._update_dongle_status(DeviceStatus.CONNECTED, "ROG Raikiri II USB Dongle plugged in")
+                        paddle_dev = next((d for d in devices if is_raikiri_paddle_device(d)), None)
+                        if paddle_dev and "path" in paddle_dev:
+                            try:
+                                dev_path = paddle_dev["path"]
+                                dev = hid.device()
+                                dev.open_path(dev_path)
+                                # Drain any queued startup/handshake packets from the device buffer
+                                try:
+                                    for _ in range(20):
+                                        if not dev.read(64, timeout_ms=5):
+                                            break
+                                except Exception:
+                                    pass
+                                with self._hid_lock:
+                                    self._hid_device = dev
+                                    self._is_hid_connected = True
+                                    self.last_connection_error = None
+                                logger.info(f"ROG Raikiri II HID device successfully opened on path {dev_path}")
+                            except Exception as open_err:
+                                self.last_connection_error = f"Failed to open Raikiri HID: {open_err}"
+                                logger.warning(f"Could not open Raikiri HID device: {open_err}")
+                    else:
+                        is_dongle_recent = (now - self.last_dongle_seen_time) < 2.5
+                        if not is_dongle_recent:
+                            self._update_dongle_status(DeviceStatus.DISCONNECTED, "USB Dongle unplugged / not detected")
+                else:
                     self.last_dongle_seen_time = now
                     self._update_dongle_status(DeviceStatus.CONNECTED, "ROG Raikiri II USB Dongle plugged in")
-                else:
-                    is_dongle_recent = (now - self.last_dongle_seen_time) < 2.5
-                    if not is_dongle_recent:
-                        self._update_dongle_status(DeviceStatus.DISCONNECTED, "USB Dongle unplugged / not detected")
-
-                # If HID device is not opened, attempt to connect to paddle interface
-                if not self._is_hid_connected and dongle_present:
-                    paddle_dev = next((d for d in devices if is_raikiri_paddle_device(d)), None)
-                    if paddle_dev and "path" in paddle_dev:
-                        try:
-                            dev_path = paddle_dev["path"]
-                            dev = hid.device()
-                            dev.open_path(dev_path)
-                            with self._hid_lock:
-                                self._hid_device = dev
-                                self._is_hid_connected = True
-                                self.last_connection_error = None
-                            logger.info(f"ROG Raikiri II HID device successfully opened on path {dev_path}")
-                        except Exception as open_err:
-                            self.last_connection_error = f"Failed to open Raikiri HID: {open_err}"
-                            logger.warning(f"Could not open Raikiri HID device: {open_err}")
 
                 # Controller Link status
                 err = self.last_connection_error
                 if err is not None and self.usb_dongle_status == DeviceStatus.CONNECTED:
+                    if self.controller_link_status != DeviceStatus.ERROR:
+                        self._cancel_and_release_all_paddles()
                     self._update_controller_status(DeviceStatus.ERROR, err)
                 elif recent_hid or recent_xinput:
                     if recent_hid and recent_xinput:
@@ -595,6 +647,8 @@ class ControllerManager:
                         desc = "Connected (XInput active)"
                     self._update_controller_status(DeviceStatus.CONNECTED, desc)
                 else:
+                    if self.controller_link_status != DeviceStatus.DISCONNECTED:
+                        self._cancel_and_release_all_paddles()
                     if self.usb_dongle_status == DeviceStatus.CONNECTED:
                         self._update_controller_status(DeviceStatus.DISCONNECTED, "Controller turned off or sleeping")
                     else:

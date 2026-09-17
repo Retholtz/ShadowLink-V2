@@ -5,6 +5,8 @@ Tests models, keymap, macros, hardware logic, and config persistence.
 
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -176,6 +178,135 @@ class TestHardwareLogic(unittest.TestCase):
         self.assertFalse(s1)
         self.assertTrue(s_cmd)
         self.assertFalse(s_lib)
+
+    def test_is_valid_paddle_packet(self):
+        # Valid normal mode packet (mode 0 or mode != 2)
+        normal_pkt = [0xB3, 0, 0, 0, 0, 1, 0, 1, 0] + [0] * 7
+        self.assertTrue(hardware.is_valid_paddle_packet(normal_pkt))
+
+        # Valid normal mode packet with non-zero header bytes from firmware (seq counter, flags)
+        normal_pkt_headers = [0xB3, 0x10, 0x02, 1, 0x05, 0, 1, 0, 0] + [0] * 7
+        self.assertTrue(hardware.is_valid_paddle_packet(normal_pkt_headers))
+
+        # Valid alt mode packet (Command=1, Library=0)
+        alt_pkt = [0xB3, 0, 0, 2, 0, 1, 0, 0, 0] + [0] * 7
+        self.assertTrue(hardware.is_valid_paddle_packet(alt_pkt))
+
+        # Too short (< 9 bytes)
+        self.assertFalse(hardware.is_valid_paddle_packet([0xB3, 0, 0, 0]))
+
+        # Wrong report ID
+        self.assertFalse(hardware.is_valid_paddle_packet([0x01, 0, 0, 0, 0, 1, 0, 1, 0]))
+
+        # Aura RGB / command packet where data[5..8] are not discrete 0 or 1
+        aura_pkt1 = [0xB3, 0x51, 0x00, 0x00, 0x00, 0x05, 0x01, 0x00, 0x00]
+        self.assertFalse(hardware.is_valid_paddle_packet(aura_pkt1))
+
+        aura_pkt2 = [0xB3, 0x52, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00]
+        self.assertFalse(hardware.is_valid_paddle_packet(aura_pkt2))
+
+        # Empty data
+        self.assertFalse(hardware.is_valid_paddle_packet([]))
+
+    def test_send_key_scancode_and_vk(self):
+        # Verify that SendInput passes both wVk and wScan for full application compatibility
+        captured_inputs = []
+        orig_send = keymap._SendInput
+
+        def mock_send(n, p_inp, sz):
+            inp = getattr(p_inp, '_obj', p_inp)
+            captured_inputs.append((inp.union.ki.wVk, inp.union.ki.wScan, inp.union.ki.dwFlags))
+            return 1
+
+        try:
+            keymap._SendInput = mock_send
+            # "Tab" has vk_code 0x09 and scan_code 0x0F
+            keymap.send_key_down("Tab")
+            self.assertEqual(len(captured_inputs), 1)
+            vk, scan, flags = captured_inputs[0]
+            self.assertEqual(vk, 0x09, "wVk must be preserved alongside scancode")
+            self.assertEqual(scan, 0x0F)
+            self.assertTrue(flags & keymap.KEYEVENTF_SCANCODE)
+
+            keymap.send_key_up("Tab")
+            self.assertEqual(len(captured_inputs), 2)
+            vk_up, scan_up, flags_up = captured_inputs[1]
+            self.assertEqual(vk_up, 0x09, "wVk must be preserved on key up")
+            self.assertEqual(scan_up, 0x0F)
+            self.assertTrue(flags_up & keymap.KEYEVENTF_KEYUP)
+        finally:
+            keymap._SendInput = orig_send
+
+    def test_disconnect_releases_paddles(self):
+        # Verify that if a paddle was pressed and then the controller disconnects / sleeps,
+        # all held buttons are immediately released cleanly.
+        down_keys = []
+        up_keys = []
+        orig_down = keymap.send_key_down
+        orig_up = keymap.send_key_up
+
+        keymap.send_key_down = lambda k: down_keys.append(k) or True
+        keymap.send_key_up = lambda k: up_keys.append(k) or True
+
+        try:
+            profile = models.Profile(name="TestDisconnect")
+            profile.layers[0].m2.enabled = True
+            profile.layers[0].m2.key_char = "Tab"
+            profile.combo_buffer_ms = 0
+
+            mgr = hardware.ControllerManager(profile)
+            mgr.controller_link_status = hardware.DeviceStatus.CONNECTED
+
+            # Mock HID device
+            class MockHid:
+                def __init__(self):
+                    self.packets = [
+                        # First packet: M2 pressed (byte 6 = 1)
+                        [0xB3, 0, 0, 0, 0, 0, 1, 0, 0] + [0] * 7
+                    ]
+                def read(self, size, timeout_ms=0):
+                    if self.packets:
+                        return self.packets.pop(0)
+                    time.sleep(0.01)
+                    return []
+                def close(self):
+                    pass
+
+            mgr._hid_device = MockHid()
+            mgr._is_hid_connected = True
+            mgr._running = True
+
+            # Run reader loop in a thread
+            t = threading.Thread(target=mgr._hid_reader_loop, daemon=True)
+            t.start()
+
+            # Wait up to 200ms for M2 down
+            deadline = time.time() + 0.25
+            while time.time() < deadline:
+                if "Tab" in down_keys:
+                    break
+                time.sleep(0.01)
+
+            self.assertIn("Tab", down_keys, "Tab should have fired on initial packet")
+
+            # Simulate controller turning off / sleeping
+            mgr.controller_link_status = hardware.DeviceStatus.DISCONNECTED
+
+            # Wait for release
+            deadline = time.time() + 0.25
+            while time.time() < deadline:
+                if "Tab" in up_keys:
+                    break
+                time.sleep(0.01)
+
+            mgr._running = False
+            t.join(timeout=0.5)
+
+            self.assertIn("Tab", up_keys, "Tab must be released automatically when controller disconnects")
+            self.assertFalse(mgr.m2_state.pressed, "m2_state.pressed must be False after release")
+        finally:
+            keymap.send_key_down = orig_down
+            keymap.send_key_up = orig_up
 
 
 class TestConfig(unittest.TestCase):

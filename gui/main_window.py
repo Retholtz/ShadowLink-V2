@@ -11,12 +11,13 @@ from pathlib import Path
 import sys
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPixmap, QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -52,6 +53,7 @@ from config import (
 import hardware
 from hardware import ControllerManager
 import keymap
+import updater
 from models import DeviceStatus, LayerConfig, PaddleBind, Profile
 from gui.dialogs import (
     ActiveProcessDialog,
@@ -62,9 +64,23 @@ from gui.dialogs import (
 )
 from gui.osd import show_osd
 from gui.theme import get_fluent_stylesheet, is_windows_dark_mode
+from gui.update_dialog import DownloadProgressDialog, UpdateAvailableDialog
 from gui.widgets import CardPanel, PaddleRowWidget, StatusIndicatorsWidget
 
 logger = logging.getLogger("ShadowLink.MainWindow")
+
+
+class CheckUpdateWorker(QThread):
+    """Background worker thread to query GitHub releases without blocking the UI."""
+    finished = Signal(bool, object, str, bool)  # (has_update, release_info, message, silent)
+
+    def __init__(self, silent: bool = False, parent: Optional[QObject] = None) -> None:
+        super().__init__(parent)
+        self.silent = silent
+
+    def run(self) -> None:
+        has_update, rel_info, msg = updater.check_for_updates()
+        self.finished.emit(has_update, rel_info, msg, self.silent)
 
 
 class HardwareBridge(QObject):
@@ -90,7 +106,7 @@ class MainWindow(QMainWindow):
         )
         self.manager.set_profile(self.active_profile)
 
-        self.setWindowTitle(f"ShadowLink - ASUS ROG Controller Remapper")
+        self.setWindowTitle(f"ShadowLink v{config.APP_VERSION} - ASUS ROG Controller Remapper")
         self.resize(1240, 820)
         self.setMinimumSize(1000, 700)
 
@@ -118,6 +134,9 @@ class MainWindow(QMainWindow):
 
         # Center on primary screen
         self._center_window()
+
+        # Check for updates silently in background on startup (matches Kotlin behavior)
+        QTimer.singleShot(1500, lambda: self._on_check_for_updates(silent=True))
 
     def _init_app_icon(self) -> None:
         self.app_icon = get_app_icon()
@@ -263,16 +282,19 @@ class MainWindow(QMainWindow):
         self.osd_combo.setCurrentText(self.global_cfg.get("osd_position", "Bottom Right"))
         footer_layout.addWidget(self.osd_combo)
 
-        # Help & Log Buttons
+        # Help, Log & Update Buttons
         self.macro_help_btn = QPushButton("Macro Help")
         self.macro_help_btn.clicked.connect(lambda: show_macro_instructions(self))
         self.layer_help_btn = QPushButton("Layer Help")
         self.layer_help_btn.clicked.connect(lambda: show_layer_instructions(self))
+        self.update_btn = QPushButton("Check for Updates")
+        self.update_btn.clicked.connect(lambda: self._on_check_for_updates(silent=False))
         self.export_log_btn = QPushButton("Export Log")
         self.export_log_btn.clicked.connect(self._on_export_log)
 
         footer_layout.addWidget(self.macro_help_btn)
         footer_layout.addWidget(self.layer_help_btn)
+        footer_layout.addWidget(self.update_btn)
         footer_layout.addWidget(self.export_log_btn)
         footer_layout.addStretch()
 
@@ -290,7 +312,7 @@ class MainWindow(QMainWindow):
         # Status Bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("ShadowLink ready.")
+        self.status_bar.showMessage(f"ShadowLink v{config.APP_VERSION} ready.")
 
     def _create_layer_tab(self, layer_index: int, layer_config: LayerConfig) -> QWidget:
         tab_widget = QWidget()
@@ -745,6 +767,7 @@ class MainWindow(QMainWindow):
         if path:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(f"ShadowLink Diagnostic Export\n")
+                f.write(f"App Version: {config.APP_VERSION}\n")
                 f.write(f"Active Profile: {self.active_profile.name}\n")
                 f.write(f"Dongle: {self.status_widget.dongle_label.text()}\n")
                 f.write(f"Controller: {self.status_widget.ctrl_label.text()}\n")
@@ -767,12 +790,16 @@ class MainWindow(QMainWindow):
 
     def _init_system_tray(self) -> None:
         self.tray_icon = QSystemTrayIcon(self.app_icon, self)
-        self.tray_icon.setToolTip("ShadowLink - ASUS ROG Controller Remapper")
+        self.tray_icon.setToolTip(f"ShadowLink v{config.APP_VERSION} - ASUS ROG Controller Remapper")
 
         menu = QMenu()
         open_action = QAction("Open ShadowLink", self)
         open_action.triggered.connect(self._restore_from_tray)
         menu.addAction(open_action)
+
+        update_action = QAction("Check for Updates...", self)
+        update_action.triggered.connect(lambda: self._on_check_for_updates(silent=False))
+        menu.addAction(update_action)
         menu.addSeparator()
 
         exit_action = QAction("Exit", self)
@@ -844,3 +871,51 @@ class MainWindow(QMainWindow):
         self._load_profile_into_ui(new_profile)
         self.profile_combo.setCurrentText(new_profile.name)
         show_osd(f"Profile: {new_profile.name}", corner=self.osd_combo.currentText())
+
+    # --- AUTO-UPDATER SLOTS ---
+
+    def _on_check_for_updates(self, silent: bool = False) -> None:
+        """Triggered either on startup (silent=True) or when user clicks Check for Updates (silent=False)."""
+        if not silent:
+            self.status_bar.showMessage("Checking for updates from GitHub...", 5000)
+            if hasattr(self, "update_btn"):
+                self.update_btn.setEnabled(False)
+                self.update_btn.setText("Checking...")
+
+        self.update_worker = CheckUpdateWorker(silent=silent, parent=self)
+        self.update_worker.finished.connect(self._on_update_check_finished)
+        self.update_worker.start()
+
+    @Slot(bool, object, str, bool)
+    def _on_update_check_finished(
+        self,
+        has_update: bool,
+        rel_info: Optional[updater.ReleaseInfo],
+        message: str,
+        silent: bool,
+    ) -> None:
+        if hasattr(self, "update_btn"):
+            self.update_btn.setEnabled(True)
+            self.update_btn.setText("Check for Updates")
+
+        if has_update and rel_info:
+            self.status_bar.showMessage(f"Update available: v{rel_info.version_str}", 8000)
+            dialog = UpdateAvailableDialog(rel_info, self)
+            if dialog.exec() == QDialog.Accepted:
+                dl_dialog = DownloadProgressDialog(rel_info, self)
+                dl_dialog.exec()
+        elif not silent:
+            if rel_info is not None:
+                self.status_bar.showMessage(f"ShadowLink is up to date (v{config.APP_VERSION}).", 5000)
+                QMessageBox.information(
+                    self,
+                    "Check for Updates",
+                    f"You are up to date!\n\nShadowLink version {config.APP_VERSION} is currently the latest release.",
+                )
+            else:
+                self.status_bar.showMessage("Update check failed.", 5000)
+                QMessageBox.warning(
+                    self,
+                    "Check for Updates",
+                    f"Could not check for updates:\n\n{message}",
+                )

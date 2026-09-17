@@ -29,7 +29,7 @@ logger = logging.getLogger("ShadowLink.App")
 def main() -> None:
     # Set Windows Application User Model ID so the custom icon appears in the Taskbar
     try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("retholtz.shadowlink.controller.1.0")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ShadowLink")
     except Exception as e:
         logger.debug(f"Could not set AppUserModelID: {e}")
 
@@ -37,6 +37,9 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("ShadowLink")
     app.setOrganizationName("Retholtz")
+    app.setApplicationVersion(config.APP_VERSION)
+
+    logger.info(f"Starting ShadowLink v{config.APP_VERSION}...")
 
     # Set icon on the application level
     app_icon = config.get_app_icon()

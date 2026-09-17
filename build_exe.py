@@ -9,6 +9,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import config
+
 
 def main() -> None:
     project_root = Path(__file__).resolve().parent
@@ -16,7 +18,7 @@ def main() -> None:
     png_path = project_root / "icon.png"
 
     print("=" * 60)
-    print(" ShadowLink Windows Build Script")
+    print(f" ShadowLink v{config.APP_VERSION} Windows Build Script")
     print("=" * 60)
 
     # 1. Verify Icon Assets
@@ -78,9 +80,23 @@ def main() -> None:
 
     # 4. Verify Built Executable
     dist_exe = project_root / "dist" / "ShadowLink" / "ShadowLink.exe"
+    if not dist_exe.exists():
+        dist_exe = project_root / "dist" / "ShadowLink.exe"
+
     if dist_exe.exists():
-        print(f"\n[+] SUCCESS: Built executable created at:")
+        print(f"\n[+] SUCCESS: Built executable created for ShadowLink v{config.APP_VERSION} at:")
         print(f"    {dist_exe} ({dist_exe.stat().st_size:,} bytes)")
+
+        # Also update installed C:\ShadowLink\ShadowLink.exe if directory exists
+        c_shadowlink = Path("C:/ShadowLink")
+        if c_shadowlink.exists():
+            dest = c_shadowlink / "ShadowLink.exe"
+            try:
+                import shutil
+                shutil.copy2(dist_exe, dest)
+                print(f"[+] Installed updated build to: {dest}")
+            except Exception as copy_err:
+                print(f"[!] Note: Could not copy to {dest} (process may be running): {copy_err}")
 
         try:
             import pefile

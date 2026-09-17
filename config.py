@@ -20,6 +20,10 @@ from models import LayerConfig, PaddleBind, Profile
 
 logger = logging.getLogger("ShadowLink.Config")
 
+APP_VERSION = "1.1"
+GITHUB_REPO = "Retholtz/ShadowLink-V2"
+GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+
 DEFAULT_DATA_DIR = Path(os.getenv("APPDATA", str(Path.home()))) / "ShadowLink"
 LOCAL_PROFILES_DIR = Path(__file__).resolve().parent / "profiles"
 
