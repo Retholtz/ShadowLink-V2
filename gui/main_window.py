@@ -9,6 +9,7 @@ import logging
 import os
 from pathlib import Path
 import sys
+import threading
 from typing import Optional
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QThread, QTimer, Signal, Slot
@@ -54,7 +55,7 @@ import hardware
 from hardware import ControllerManager
 import keymap
 import updater
-from models import DeviceStatus, LayerConfig, PaddleBind, Profile
+from models import ControllerModel, DeviceStatus, LayerConfig, PaddleBind, Profile
 from gui.dialogs import (
     ActiveProcessDialog,
     MacroEditorDialog,
@@ -68,6 +69,32 @@ from gui.update_dialog import DownloadProgressDialog, UpdateAvailableDialog
 from gui.widgets import CardPanel, PaddleRowWidget, StatusIndicatorsWidget
 
 logger = logging.getLogger("ShadowLink.MainWindow")
+
+
+class ProButtonsContainer(QWidget):
+    """
+    Dedicated container widget for ROG Raikiri II Pro buttons (M5, M6, F1-F4).
+    Syncs visibility across all layer tab instances.
+    """
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._all_containers: list[QWidget] = [self]
+        self._explicit_visible: bool = False
+
+    def register_container(self, c: QWidget) -> None:
+        if c not in self._all_containers:
+            self._all_containers.append(c)
+            QWidget.setVisible(c, self._explicit_visible)
+
+    def setVisible(self, visible: bool) -> None:
+        self._explicit_visible = visible
+        for c in self._all_containers:
+            QWidget.setVisible(c, visible)
+
+    def isVisible(self) -> bool:
+        if super().isVisible():
+            return True
+        return self._explicit_visible and not self.isHidden()
 
 
 class CheckUpdateWorker(QThread):
@@ -89,6 +116,7 @@ class HardwareBridge(QObject):
     layer_changed = Signal(int, str)                   # layer_num, layer_name
     paddle_event = Signal(str, bool, bool)             # name, raw_pressed, debounced
     auto_switched = Signal(object)                     # Profile
+    model_detected = Signal(object)                    # ControllerModel
 
 
 class MainWindow(QMainWindow):
@@ -116,16 +144,22 @@ class MainWindow(QMainWindow):
         self.bridge.layer_changed.connect(self._on_layer_changed)
         self.bridge.paddle_event.connect(self._on_paddle_event)
         self.bridge.auto_switched.connect(self._on_auto_switched)
+        self.bridge.model_detected.connect(self._on_model_detected)
 
         self.manager.on_status_updated = lambda ds, dd, cs, cd: self.bridge.status_updated.emit(ds, dd, cs, cd)
         self.manager.on_layer_changed = lambda idx, name: self.bridge.layer_changed.emit(idx, name)
         self.manager.on_paddle_event = lambda name, raw, deb: self.bridge.paddle_event.emit(name, raw, deb)
+        self.manager.on_model_detected = self._handle_model_detected
 
         # Build UI layout
         self._init_app_icon()
         self._init_ui()
         self._init_system_tray()
         self.refresh_layer_locks()
+
+        # Update UI visibility to match detected model
+        if self.manager.detected_model == ControllerModel.RAIKIRI_II_PRO:
+            self._on_model_detected(ControllerModel.RAIKIRI_II_PRO)
 
         # Start AutoSwitch watchdog if enabled
         self.auto_switcher: Optional[AutoSwitchWatchdog] = None
@@ -371,16 +405,8 @@ class MainWindow(QMainWindow):
             scroll.setWidget(container)
             return scroll
 
-        # 1. Back Paddles
-        back_paddles = [
-            ("cmd", "Command", layer_config.cmd),
-            ("lib", "Library", layer_config.lib),
-            ("m1", "M1 (Bot-L)", layer_config.m1),
-            ("m2", "M2 (Top-L)", layer_config.m2),
-            ("m3", "M3 (Top-R)", layer_config.m3),
-            ("m4", "M4 (Bot-R)", layer_config.m4),
-        ]
-        sub_tabs.addTab(create_scroll_panel(back_paddles), " Back Paddles ")
+        # 1. Back Paddles (includes M1-M4 and Pro buttons M5, M6, F1-F4)
+        sub_tabs.addTab(self._build_paddle_mapping_ui(layer_config, rows_map), " Back Paddles ")
 
         # 2. Paddle Combos
         combos = [
@@ -417,6 +443,74 @@ class MainWindow(QMainWindow):
         layout.addWidget(sub_tabs)
         return tab_widget
 
+    def _build_paddle_mapping_ui(
+        self,
+        layer_config: Optional[LayerConfig] = None,
+        rows_map: Optional[dict[str, PaddleRowWidget]] = None,
+    ) -> QWidget:
+        if layer_config is None:
+            layer_config = self.active_profile.layers[0] if hasattr(self, "active_profile") and self.active_profile.layers else LayerConfig()
+        if rows_map is None:
+            rows_map = {}
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        c_layout = QVBoxLayout(container)
+        c_layout.setContentsMargins(6, 6, 6, 6)
+        c_layout.setSpacing(6)
+
+        # Base paddles (Command, Library, M1-M4)
+        base_paddles = [
+            ("cmd", "Command", layer_config.cmd),
+            ("lib", "Library", layer_config.lib),
+            ("m1", "M1 (Bot-L)", layer_config.m1),
+            ("m2", "M2 (Top-L)", layer_config.m2),
+            ("m3", "M3 (Top-R)", layer_config.m3),
+            ("m4", "M4 (Bot-R)", layer_config.m4),
+        ]
+        for key_id, display_title, bind_obj in base_paddles:
+            row = PaddleRowWidget(display_title, bind_obj)
+            row.open_recorder.connect(self._open_macro_recorder)
+            row.open_editor.connect(self._open_macro_editor)
+            rows_map[key_id] = row
+            c_layout.addWidget(row)
+
+        # Dedicated container widget for Pro buttons (M5, M6, F1, F2, F3, F4) directly below M1-M4
+        if not hasattr(self, "pro_buttons_container") or self.pro_buttons_container is None:
+            pro_box = ProButtonsContainer()
+            self.pro_buttons_container = pro_box
+            self.pro_buttons_containers = pro_box._all_containers
+        else:
+            pro_box = QWidget()
+            self.pro_buttons_container.register_container(pro_box)
+
+        pro_layout = QVBoxLayout(pro_box)
+        pro_layout.setContentsMargins(0, 0, 0, 0)
+        pro_layout.setSpacing(6)
+
+        pro_paddles = [
+            ("m5", "M5", layer_config.m5),
+            ("m6", "M6", layer_config.m6),
+            ("f1", "F1", layer_config.f1),
+            ("f2", "F2", layer_config.f2),
+            ("f3", "F3", layer_config.f3),
+            ("f4", "F4", layer_config.f4),
+        ]
+        for key_id, display_title, bind_obj in pro_paddles:
+            row = PaddleRowWidget(display_title, bind_obj)
+            row.open_recorder.connect(self._open_macro_recorder)
+            row.open_editor.connect(self._open_macro_editor)
+            rows_map[key_id] = row
+            pro_layout.addWidget(row)
+
+        pro_box.setVisible(False)
+        c_layout.addWidget(pro_box)
+        c_layout.addStretch()
+
+        scroll.setWidget(container)
+        return scroll
+
     def _create_settings_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -434,7 +528,10 @@ class MainWindow(QMainWindow):
         t_info.setStyleSheet("color: #a0a0a0; margin-bottom: 8px;")
         toggle_card.main_layout.addWidget(t_info)
 
-        toggle_options = ["None", "M1", "M2", "M3", "M4", "Command", "Library"]
+        base_options = ["None", "M1", "M2", "M3", "M4", "Command", "Library"]
+        pro_options = base_options + ["M5", "M6", "F1", "F2", "F3", "F4"]
+        is_pro = (self.manager.detected_model == ControllerModel.RAIKIRI_II_PRO)
+        toggle_options = pro_options if is_pro else base_options
 
         row1 = QHBoxLayout()
         row1.addWidget(QLabel("Primary Layer Toggle Button:"))
@@ -542,7 +639,9 @@ class MainWindow(QMainWindow):
 
         alias_map = {
             "m1": "m1", "m2": "m2", "m3": "m3", "m4": "m4",
-            "command": "cmd", "library": "lib"
+            "command": "cmd", "library": "lib",
+            "m5": "m5", "m6": "m6",
+            "f1": "f1", "f2": "f2", "f3": "f3", "f4": "f4",
         }
         target_id = alias_map.get(reserved_key, "") if reserved_key else ""
 
@@ -768,6 +867,7 @@ class MainWindow(QMainWindow):
             with open(path, "w", encoding="utf-8") as f:
                 f.write(f"ShadowLink Diagnostic Export\n")
                 f.write(f"App Version: {config.APP_VERSION}\n")
+                f.write(f"Detected Model: {self.manager.detected_model.value}\n")
                 f.write(f"Active Profile: {self.active_profile.name}\n")
                 f.write(f"Dongle: {self.status_widget.dongle_label.text()}\n")
                 f.write(f"Controller: {self.status_widget.ctrl_label.text()}\n")
@@ -871,6 +971,38 @@ class MainWindow(QMainWindow):
         self._load_profile_into_ui(new_profile)
         self.profile_combo.setCurrentText(new_profile.name)
         show_osd(f"Profile: {new_profile.name}", corner=self.osd_combo.currentText())
+
+    def _handle_model_detected(self, model: ControllerModel) -> None:
+        if threading.current_thread() is threading.main_thread():
+            self._on_model_detected(model)
+        else:
+            self.bridge.model_detected.emit(model)
+
+    @Slot(object)
+    def _on_model_detected(self, model: ControllerModel) -> None:
+        is_pro = (model == ControllerModel.RAIKIRI_II_PRO)
+        if hasattr(self, "pro_buttons_container") and self.pro_buttons_container is not None:
+            self.pro_buttons_container.setVisible(is_pro)
+
+        if hasattr(self, "t1_combo") and hasattr(self, "t2_combo"):
+            current_t1 = self.t1_combo.currentText()
+            current_t2 = self.t2_combo.currentText()
+
+            base_options = ["None", "M1", "M2", "M3", "M4", "Command", "Library"]
+            pro_options = base_options + ["M5", "M6", "F1", "F2", "F3", "F4"]
+            opts = pro_options if is_pro else base_options
+
+            for combo, curr in ((self.t1_combo, current_t1), (self.t2_combo, current_t2)):
+                combo.blockSignals(True)
+                combo.clear()
+                combo.addItems(opts)
+                if curr in opts:
+                    combo.setCurrentText(curr)
+                else:
+                    combo.setCurrentText("None")
+                combo.blockSignals(False)
+
+            self.refresh_layer_locks()
 
     # --- AUTO-UPDATER SLOTS ---
 

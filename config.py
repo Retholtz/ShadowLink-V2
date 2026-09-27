@@ -236,6 +236,12 @@ def import_properties_profile(file_path: Path) -> Profile:
         load_bind(f"M4{suffix}", layer.m4)
         load_bind(f"CMD{suffix}", layer.cmd)
         load_bind(f"LIB{suffix}", layer.lib)
+        load_bind(f"M5{suffix}", layer.m5, "7")
+        load_bind(f"M6{suffix}", layer.m6, "8")
+        load_bind(f"F1{suffix}", layer.f1, "9")
+        load_bind(f"F2{suffix}", layer.f2, "0")
+        load_bind(f"F3{suffix}", layer.f3, "-")
+        load_bind(f"F4{suffix}", layer.f4, "=")
 
         load_bind(f"LB{suffix}", layer.lb, "Xbox_LB")
         load_bind(f"RB{suffix}", layer.rb, "Xbox_RB")

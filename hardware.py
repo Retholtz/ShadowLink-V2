@@ -12,14 +12,17 @@ import time
 from typing import Callable, Optional
 
 import hid
-from models import ButtonState, DeviceStatus, LayerConfig, PaddleBind, Profile
+from models import ButtonState, ControllerModel, DeviceStatus, LayerConfig, PaddleBind, Profile
 import keymap
 import macros
 
 logger = logging.getLogger("ShadowLink.Hardware")
 
 ASUS_VID = 0x0B05
-REPORT_ID_PADDLES = 0xB3
+PID_RAIKIRI_II_PRO = 0x1C65
+REPORT_ID_RAIKIRI_II = 0xB3
+REPORT_ID_RAIKIRI_II_PRO = 0x04
+REPORT_ID_PADDLES = REPORT_ID_RAIKIRI_II
 
 
 # --- XINPUT CTYPES BINDINGS ---
@@ -63,19 +66,44 @@ def find_raikiri_hid_devices() -> list[dict]:
 
 
 def is_raikiri_paddle_device(device_info: dict) -> bool:
-    """Check if device usage_page ends with 0xC3 (e.g. 0xFFC3)."""
+    """
+    Check if device matches the paddle interface for Raikiri II or Raikiri II Pro.
+    For Raikiri II Pro (0x1C65): specifically target Collection 3 (UsagePage 0xFFC3, Usage 0x0001 or 0x0002).
+    For Standard Raikiri II: usage_page ends with 0xC3 (e.g. 0xFFC3).
+    """
     up = device_info.get("usage_page", 0)
-    return (up & 0xFF) == 0xC3 or hex(up).lower().endswith("c3")
+    usage = device_info.get("usage", 0)
+    pid = device_info.get("product_id", 0)
+
+    # For Raikiri II Pro (0x1C65), specifically target Collection 3 (UsagePage 0xFFC3)
+    if pid == PID_RAIKIRI_II_PRO:
+        return (up & 0xFFFF) == 0xFFC3 and usage in (0x0001, 0x0002)
+
+    # Standard Raikiri II fallback
+    return (up & 0xFF) == 0xC3 or (
+        hex(up).lower().endswith("c3") if isinstance(up, int) else str(up).lower().endswith("c3")
+    )
 
 
-def is_valid_paddle_packet(data: list[int] | bytes) -> bool:
+def is_valid_paddle_packet(data: list[int] | bytes, is_pro: bool = False) -> bool:
     """
     Validates that an incoming HID report is a genuine ROG Raikiri paddle report.
-    Rejects malformed packets or multi-byte Aura RGB / firmware data sharing Report ID 0xB3.
+    For Pro (is_pro=True or report 0x04): validates Report 0x04, Opcode 12 05, payload len >= 7.
+    For Standard Raikiri II: validates Report 0xB3 and discrete switch bytes.
     """
-    if not data or len(data) < 9:
+    if not data or len(data) < 7:
         return False
-    if (data[0] & 0xFF) != REPORT_ID_PADDLES:
+
+    report_id = data[0] & 0xFF
+
+    if is_pro or report_id == REPORT_ID_RAIKIRI_II_PRO:
+        # Report 0x04, Opcode 12 05, payload length at least 7 bytes
+        return report_id == REPORT_ID_RAIKIRI_II_PRO and len(data) >= 7 and data[1] == 0x12 and data[2] == 0x05
+
+    # Standard Raikiri II (Report 0xB3)
+    if report_id != REPORT_ID_RAIKIRI_II:
+        return False
+    if len(data) < 9:
         return False
     is_alt_mode = (len(data) > 3 and data[3] == 2)
     if not is_alt_mode:
@@ -118,6 +146,10 @@ class ControllerManager:
         self._hid_lock = threading.RLock()
         self._is_hid_connected = False
 
+        # Model tracking
+        self.detected_model = ControllerModel.RAIKIRI_II
+        self.on_model_detected: Optional[Callable[[ControllerModel], None]] = None
+
         # Button states: Paddles & Combos
         self.m1_state = ButtonState()
         self.m2_state = ButtonState()
@@ -125,6 +157,14 @@ class ControllerManager:
         self.m4_state = ButtonState()
         self.cmd_state = ButtonState()
         self.lib_state = ButtonState()
+
+        # Raikiri II Pro Button states
+        self.m5_state = ButtonState()
+        self.m6_state = ButtonState()
+        self.f1_state = ButtonState()
+        self.f2_state = ButtonState()
+        self.f3_state = ButtonState()
+        self.f4_state = ButtonState()
 
         self.m1_m2_state = ButtonState()
         self.m1_m3_state = ButtonState()
@@ -141,6 +181,16 @@ class ControllerManager:
         self.on_paddle_event: Optional[Callable[[str, bool, bool], None]] = None
         self.on_layer_changed: Optional[Callable[[int, str], None]] = None
         self.on_status_updated: Optional[Callable[[DeviceStatus, str, DeviceStatus, str], None]] = None
+
+    def _set_detected_model(self, model: ControllerModel) -> None:
+        if self.detected_model != model:
+            self.detected_model = model
+            logger.info(f"Controller model detected: {model.value}")
+            if self.on_model_detected:
+                try:
+                    self.on_model_detected(model)
+                except Exception as e:
+                    logger.error(f"Error in on_model_detected callback: {e}", exc_info=True)
 
     @property
     def current_layer(self) -> LayerConfig:
@@ -217,6 +267,8 @@ class ControllerManager:
         all_states = [
             self.m1_state, self.m2_state, self.m3_state, self.m4_state,
             self.cmd_state, self.lib_state,
+            self.m5_state, self.m6_state,
+            self.f1_state, self.f2_state, self.f3_state, self.f4_state,
             self.m1_m2_state, self.m1_m3_state, self.m1_m4_state,
             self.m2_m3_state, self.m2_m4_state, self.m3_m4_state,
             self.cmd_lib_state,
@@ -255,18 +307,28 @@ class ControllerManager:
         logger.info("ShadowLink Hardware Controller Manager stopped")
 
     def _hid_reader_loop(self) -> None:
-        """Main loop managing HID connection and parsing Report 0xB3."""
+        """Main loop managing HID connection and parsing Report 0xB3 and 0x04."""
         was_toggle_triggered = False
 
         s1 = s2 = s3 = s4 = s_cmd = s_lib = False
+        s5 = s6 = sf1 = sf2 = sf3 = sf4 = False
+
         last_m1_time = last_m2_time = last_m3_time = 0.0
         last_m4_time = last_cmd_time = last_lib_time = 0.0
+        last_m5_time = last_m6_time = 0.0
+        last_f1_time = last_f2_time = last_f3_time = last_f4_time = 0.0
 
         prev_debounced_s1 = prev_debounced_s2 = prev_debounced_s3 = False
         prev_debounced_s4 = prev_debounced_cmd = prev_debounced_lib = False
+        prev_debounced_s5 = prev_debounced_s6 = False
+        prev_debounced_sf1 = prev_debounced_sf2 = prev_debounced_sf3 = prev_debounced_sf4 = False
 
         off_delay_sec = 0.020  # 20ms microswitch debounce on release
         last_valid_paddle_time = 0.0
+
+        last_hex_dump_time = 0.0
+        last_logged_packet: Optional[bytes] = None
+        last_states_tuple = None
 
         while self._running:
             if not self._is_hid_connected or self._hid_device is None:
@@ -279,25 +341,73 @@ class ControllerManager:
 
                 now = time.time()
                 if data and len(data) > 0:
-                    if is_valid_paddle_packet(data):
+                    is_pro = (self.detected_model == ControllerModel.RAIKIRI_II_PRO) or ((data[0] & 0xFF) == REPORT_ID_RAIKIRI_II_PRO)
+
+                    if is_valid_paddle_packet(data, is_pro=is_pro):
                         self.last_hid_data_time = now
                         last_valid_paddle_time = now
-                        is_alt_mode = (len(data) > 3 and data[3] == 2)
 
-                        s1 = (not is_alt_mode) and (data[8] == 1)
-                        s2 = (not is_alt_mode) and (data[6] == 1)
-                        s3 = (not is_alt_mode) and (data[5] == 1)
-                        s4 = (not is_alt_mode) and (data[7] == 1)
+                        if is_pro:
+                            if self.detected_model != ControllerModel.RAIKIRI_II_PRO:
+                                self.detected_model = ControllerModel.RAIKIRI_II_PRO
+                                if self.on_model_detected:
+                                    try:
+                                        self.on_model_detected(self.detected_model)
+                                    except Exception as e:
+                                        logger.error(f"Error in on_model_detected callback: {e}", exc_info=True)
 
-                        s_cmd = is_alt_mode and (data[5] == 1)
-                        s_lib = is_alt_mode and (data[6] == 1)
+                            # Bitfield on data[5] and data[6]
+                            b5 = data[5]
+                            b6 = data[6]
+                            s1 = bool(b5 & 0x01)
+                            s2 = bool(b5 & 0x02)
+                            s3 = bool(b5 & 0x04)
+                            s4 = bool(b5 & 0x08)
+                            s5 = bool(b5 & 0x10)
+                            s6 = bool(b5 & 0x20)
+                            sf1 = bool(b5 & 0x40)
+                            sf2 = bool(b5 & 0x80)
+                            sf3 = bool(b6 & 0x01)
+                            sf4 = bool(b6 & 0x02)
+                            s_cmd = False
+                            s_lib = False
+                        else:
+                            # Standard Raikiri II binary bytes
+                            is_alt_mode = (len(data) > 3 and data[3] == 2)
+                            s1 = (not is_alt_mode) and (data[8] == 1)
+                            s2 = (not is_alt_mode) and (data[6] == 1)
+                            s3 = (not is_alt_mode) and (data[5] == 1)
+                            s4 = (not is_alt_mode) and (data[7] == 1)
+                            s5 = s6 = sf1 = sf2 = sf3 = sf4 = False
+                            s_cmd = is_alt_mode and (data[5] == 1)
+                            s_lib = is_alt_mode and (data[6] == 1)
+
+                        is_handled = True
+                    else:
+                        is_handled = False
+
+                    # Diagnostic logging: debug rate-limited hex dump for unhandled or state-changing reports
+                    curr_states = (s1, s2, s3, s4, s_cmd, s_lib, s5, s6, sf1, sf2, sf3, sf4)
+                    state_changed = (curr_states != last_states_tuple)
+                    curr_bytes = bytes(data)
+
+                    if not is_handled or state_changed:
+                        if curr_bytes != last_logged_packet or (now - last_hex_dump_time) >= 0.5:
+                            logger.debug(f"HID report [report_id={hex(data[0])}, len={len(data)}]: {curr_bytes.hex()}")
+                            last_hex_dump_time = now
+                            last_logged_packet = curr_bytes
+                    last_states_tuple = curr_states
+
                 elif data is None:
                     # Device disconnected
                     logger.warning("HID device disconnected during read")
                     self._cancel_and_release_all_paddles()
                     s1 = s2 = s3 = s4 = s_cmd = s_lib = False
+                    s5 = s6 = sf1 = sf2 = sf3 = sf4 = False
                     prev_debounced_s1 = prev_debounced_s2 = prev_debounced_s3 = False
                     prev_debounced_s4 = prev_debounced_cmd = prev_debounced_lib = False
+                    prev_debounced_s5 = prev_debounced_s6 = False
+                    prev_debounced_sf1 = prev_debounced_sf2 = prev_debounced_sf3 = prev_debounced_sf4 = False
                     with self._hid_lock:
                         self._is_hid_connected = False
                         if self._hid_device:
@@ -310,13 +420,16 @@ class ControllerManager:
 
                 # Safety release: if a button is marked held but no report received for >3.0s
                 # (e.g. controller was abruptly switched off or wireless dropped while held), release it cleanly
-                if (s1 or s2 or s3 or s4 or s_cmd or s_lib) and last_valid_paddle_time > 0 and (now - last_valid_paddle_time) > 3.0:
+                any_held = (s1 or s2 or s3 or s4 or s_cmd or s_lib or s5 or s6 or sf1 or sf2 or sf3 or sf4)
+                if any_held and last_valid_paddle_time > 0 and (now - last_valid_paddle_time) > 3.0:
                     s1 = s2 = s3 = s4 = s_cmd = s_lib = False
+                    s5 = s6 = sf1 = sf2 = sf3 = sf4 = False
 
                 # If controller is sleeping or off, ensure inputs do not latch
                 if self.controller_link_status == DeviceStatus.DISCONNECTED:
-                    if s1 or s2 or s3 or s4 or s_cmd or s_lib:
+                    if any_held:
                         s1 = s2 = s3 = s4 = s_cmd = s_lib = False
+                        s5 = s6 = sf1 = sf2 = sf3 = sf4 = False
                         self._cancel_and_release_all_paddles()
 
                 # Debouncing: high updates timestamp, low holds for off_delay_sec
@@ -326,6 +439,12 @@ class ControllerManager:
                 if s4: last_m4_time = now
                 if s_cmd: last_cmd_time = now
                 if s_lib: last_lib_time = now
+                if s5: last_m5_time = now
+                if s6: last_m6_time = now
+                if sf1: last_f1_time = now
+                if sf2: last_f2_time = now
+                if sf3: last_f3_time = now
+                if sf4: last_f4_time = now
 
                 debounced_s1 = s1 or ((now - last_m1_time) < off_delay_sec)
                 debounced_s2 = s2 or ((now - last_m2_time) < off_delay_sec)
@@ -333,6 +452,12 @@ class ControllerManager:
                 debounced_s4 = s4 or ((now - last_m4_time) < off_delay_sec)
                 debounced_cmd = s_cmd or ((now - last_cmd_time) < off_delay_sec)
                 debounced_lib = s_lib or ((now - last_lib_time) < off_delay_sec)
+                debounced_s5 = s5 or ((now - last_m5_time) < off_delay_sec)
+                debounced_s6 = s6 or ((now - last_m6_time) < off_delay_sec)
+                debounced_sf1 = sf1 or ((now - last_f1_time) < off_delay_sec)
+                debounced_sf2 = sf2 or ((now - last_f2_time) < off_delay_sec)
+                debounced_sf3 = sf3 or ((now - last_f3_time) < off_delay_sec)
+                debounced_sf4 = sf4 or ((now - last_f4_time) < off_delay_sec)
 
                 # Fire raw paddle change callbacks if listeners registered
                 if self.on_paddle_event:
@@ -348,6 +473,18 @@ class ControllerManager:
                         self.on_paddle_event("Command", s_cmd, debounced_cmd)
                     if debounced_lib != prev_debounced_lib:
                         self.on_paddle_event("Library", s_lib, debounced_lib)
+                    if debounced_s5 != prev_debounced_s5:
+                        self.on_paddle_event("M5", s5, debounced_s5)
+                    if debounced_s6 != prev_debounced_s6:
+                        self.on_paddle_event("M6", s6, debounced_s6)
+                    if debounced_sf1 != prev_debounced_sf1:
+                        self.on_paddle_event("F1", sf1, debounced_sf1)
+                    if debounced_sf2 != prev_debounced_sf2:
+                        self.on_paddle_event("F2", sf2, debounced_sf2)
+                    if debounced_sf3 != prev_debounced_sf3:
+                        self.on_paddle_event("F3", sf3, debounced_sf3)
+                    if debounced_sf4 != prev_debounced_sf4:
+                        self.on_paddle_event("F4", sf4, debounced_sf4)
 
                 prev_debounced_s1 = debounced_s1
                 prev_debounced_s2 = debounced_s2
@@ -355,6 +492,12 @@ class ControllerManager:
                 prev_debounced_s4 = debounced_s4
                 prev_debounced_cmd = debounced_cmd
                 prev_debounced_lib = debounced_lib
+                prev_debounced_s5 = debounced_s5
+                prev_debounced_s6 = debounced_s6
+                prev_debounced_sf1 = debounced_sf1
+                prev_debounced_sf2 = debounced_sf2
+                prev_debounced_sf3 = debounced_sf3
+                prev_debounced_sf4 = debounced_sf4
 
                 states = {
                     "M1": debounced_s1,
@@ -363,6 +506,12 @@ class ControllerManager:
                     "M4": debounced_s4,
                     "Command": debounced_cmd,
                     "Library": debounced_lib,
+                    "M5": debounced_s5,
+                    "M6": debounced_s6,
+                    "F1": debounced_sf1,
+                    "F2": debounced_sf2,
+                    "F3": debounced_sf3,
+                    "F4": debounced_sf4,
                 }
 
                 p = self.profile
@@ -400,7 +549,7 @@ class ControllerManager:
 
                 cl = self.current_layer
 
-                # Handle Combos
+                # Handle Combos (M1-M4 and Command/Library)
                 def handle_combo(
                     name1: str, sA: bool,
                     name2: str, sB: bool,
@@ -438,7 +587,7 @@ class ControllerManager:
                 handle_combo("M3", debounced_s3, "M4", debounced_s4, self.m3_m4_state, cl.m3_m4, self.m3_state, self.m4_state)
                 handle_combo("Command", debounced_cmd, "Library", debounced_lib, self.cmd_lib_state, cl.cmd_lib, self.cmd_state, self.lib_state)
 
-                # Handle Singles
+                # Handle Singles for all 10 buttons (+ Command and Library)
                 def handle_single(name: str, state: bool, bs: ButtonState, bind: PaddleBind) -> None:
                     if name in consumed:
                         if not bs.pressed:
@@ -484,14 +633,23 @@ class ControllerManager:
                 handle_single("M4", debounced_s4, self.m4_state, cl.m4)
                 handle_single("Command", debounced_cmd, self.cmd_state, cl.cmd)
                 handle_single("Library", debounced_lib, self.lib_state, cl.lib)
+                handle_single("M5", debounced_s5, self.m5_state, cl.m5)
+                handle_single("M6", debounced_s6, self.m6_state, cl.m6)
+                handle_single("F1", debounced_sf1, self.f1_state, cl.f1)
+                handle_single("F2", debounced_sf2, self.f2_state, cl.f2)
+                handle_single("F3", debounced_sf3, self.f3_state, cl.f3)
+                handle_single("F4", debounced_sf4, self.f4_state, cl.f4)
 
             except Exception as e:
                 logger.error(f"Error in Raikiri reading loop: {e}", exc_info=True)
                 self.last_connection_error = f"HID read error: {e}"
                 self._cancel_and_release_all_paddles()
                 s1 = s2 = s3 = s4 = s_cmd = s_lib = False
+                s5 = s6 = sf1 = sf2 = sf3 = sf4 = False
                 prev_debounced_s1 = prev_debounced_s2 = prev_debounced_s3 = False
                 prev_debounced_s4 = prev_debounced_cmd = prev_debounced_lib = False
+                prev_debounced_s5 = prev_debounced_s6 = False
+                prev_debounced_sf1 = prev_debounced_sf2 = prev_debounced_sf3 = prev_debounced_sf4 = False
                 with self._hid_lock:
                     self._is_hid_connected = False
                     if self._hid_device:
@@ -598,12 +756,27 @@ class ControllerManager:
                 # If HID device is not opened, attempt to connect to paddle interface
                 if not self._is_hid_connected:
                     devices = find_raikiri_hid_devices()
+                    for d in devices:
+                        logger.debug(
+                            f"HID Candidate: PID={hex(d.get('product_id', 0))} "
+                            f"Interface={d.get('interface_number')} "
+                            f"UsagePage={hex(d.get('usage_page', 0))} "
+                            f"Usage={hex(d.get('usage', 0))} "
+                            f"Path={d.get('path')}"
+                        )
                     dongle_present = len(devices) > 0
 
                     if dongle_present:
                         self.last_dongle_seen_time = now
-                        self._update_dongle_status(DeviceStatus.CONNECTED, "ROG Raikiri II USB Dongle plugged in")
                         paddle_dev = next((d for d in devices if is_raikiri_paddle_device(d)), None)
+                        if paddle_dev:
+                            if paddle_dev.get("product_id") == PID_RAIKIRI_II_PRO:
+                                self._set_detected_model(ControllerModel.RAIKIRI_II_PRO)
+                            else:
+                                self._set_detected_model(ControllerModel.RAIKIRI_II)
+
+                        model_name = self.detected_model.value
+                        self._update_dongle_status(DeviceStatus.CONNECTED, f"{model_name} USB Dongle plugged in")
                         if paddle_dev and "path" in paddle_dev:
                             try:
                                 dev_path = paddle_dev["path"]
@@ -620,7 +793,7 @@ class ControllerManager:
                                     self._hid_device = dev
                                     self._is_hid_connected = True
                                     self.last_connection_error = None
-                                logger.info(f"ROG Raikiri II HID device successfully opened on path {dev_path}")
+                                logger.info(f"{model_name} HID device successfully opened on path {dev_path}")
                             except Exception as open_err:
                                 self.last_connection_error = f"Failed to open Raikiri HID: {open_err}"
                                 logger.warning(f"Could not open Raikiri HID device: {open_err}")
@@ -630,7 +803,8 @@ class ControllerManager:
                             self._update_dongle_status(DeviceStatus.DISCONNECTED, "USB Dongle unplugged / not detected")
                 else:
                     self.last_dongle_seen_time = now
-                    self._update_dongle_status(DeviceStatus.CONNECTED, "ROG Raikiri II USB Dongle plugged in")
+                    model_name = self.detected_model.value
+                    self._update_dongle_status(DeviceStatus.CONNECTED, f"{model_name} USB Dongle plugged in")
 
                 # Controller Link status
                 err = self.last_connection_error
@@ -640,9 +814,9 @@ class ControllerManager:
                     self._update_controller_status(DeviceStatus.ERROR, err)
                 elif recent_hid or recent_xinput:
                     if recent_hid and recent_xinput:
-                        desc = "Connected (Raikiri II HID & XInput active)"
+                        desc = f"Connected ({self.detected_model.value} HID & XInput active)"
                     elif recent_hid:
-                        desc = "Connected (Raikiri II HID active)"
+                        desc = f"Connected ({self.detected_model.value} HID active)"
                     else:
                         desc = "Connected (XInput active)"
                     self._update_controller_status(DeviceStatus.CONNECTED, desc)

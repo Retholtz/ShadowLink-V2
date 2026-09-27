@@ -351,6 +351,195 @@ class TestConfig(unittest.TestCase):
             self.assertEqual(p.layers[0].m2.key_char, "LClick")
 
 
+    def test_import_properties_profile_with_pro_buttons(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            prop_file = Path(tmpdir) / "ProProfile.properties"
+            prop_file.write_text(
+                "TARGET_PROCESS=game.exe\n"
+                "LAYER1_NAME=Pro Layer\n"
+                "M5_KEY=7\n"
+                "M5_EN=true\n"
+                "M6_KEY=8\n"
+                "M6_EN=true\n"
+                "F1_KEY=9\n"
+                "F1_EN=true\n"
+                "F2_KEY=0\n"
+                "F2_EN=true\n"
+                "F3_KEY=-\n"
+                "F3_EN=true\n"
+                "F4_KEY==\n"
+                "F4_EN=true\n",
+                encoding="utf-8"
+            )
+            p = config.import_properties_profile(prop_file)
+            l1 = p.layers[0]
+            self.assertTrue(l1.m5.enabled)
+            self.assertEqual(l1.m5.key_char, "7")
+            self.assertTrue(l1.m6.enabled)
+            self.assertEqual(l1.m6.key_char, "8")
+            self.assertTrue(l1.f1.enabled)
+            self.assertEqual(l1.f1.key_char, "9")
+            self.assertTrue(l1.f2.enabled)
+            self.assertEqual(l1.f2.key_char, "0")
+            self.assertTrue(l1.f3.enabled)
+            self.assertEqual(l1.f3.key_char, "-")
+            self.assertTrue(l1.f4.enabled)
+            self.assertEqual(l1.f4.key_char, "=")
+
+
+class TestRaikiriPro(unittest.TestCase):
+    def test_controller_model_enum(self):
+        self.assertEqual(models.ControllerModel.RAIKIRI_II.value, "ROG Raikiri II")
+        self.assertEqual(models.ControllerModel.RAIKIRI_II_PRO.value, "ROG Raikiri II Pro")
+
+    def test_layer_config_pro_buttons_defaults(self):
+        cfg = models.LayerConfig()
+        # Verify M5, M6, F1-F4 are disabled by default with expected default keys
+        self.assertFalse(cfg.m5.enabled)
+        self.assertEqual(cfg.m5.key_char, "7")
+        self.assertFalse(cfg.m6.enabled)
+        self.assertEqual(cfg.m6.key_char, "8")
+        self.assertFalse(cfg.f1.enabled)
+        self.assertEqual(cfg.f1.key_char, "9")
+        self.assertFalse(cfg.f2.enabled)
+        self.assertEqual(cfg.f2.key_char, "0")
+        self.assertFalse(cfg.f3.enabled)
+        self.assertEqual(cfg.f3.key_char, "-")
+        self.assertFalse(cfg.f4.enabled)
+        self.assertEqual(cfg.f4.key_char, "=")
+
+    def test_pro_buttons_roundtrip_and_backward_compatibility(self):
+        # 1. Backward compatibility: deserialize old JSON profile missing M5-F4
+        legacy_dict = {
+            "name": "Legacy",
+            "enabled": True,
+            "m1": {"enabled": True, "key_char": "1"},
+        }
+        cfg = models.LayerConfig.from_dict(legacy_dict)
+        self.assertEqual(cfg.m1.key_char, "1")
+        self.assertFalse(cfg.m5.enabled)
+        self.assertEqual(cfg.m5.key_char, "7")
+        self.assertFalse(cfg.f4.enabled)
+
+        # 2. Round-trip with modified Pro buttons
+        cfg.m5.enabled = True
+        cfg.m5.key_char = "X"
+        cfg.f1.enabled = True
+        cfg.f1.key_char = "Y"
+        d = cfg.to_dict()
+        self.assertIn("m5", d)
+        self.assertIn("f4", d)
+        self.assertEqual(d["m5"]["key_char"], "X")
+
+        cfg2 = models.LayerConfig.from_dict(d)
+        self.assertTrue(cfg2.m5.enabled)
+        self.assertEqual(cfg2.m5.key_char, "X")
+        self.assertTrue(cfg2.f1.enabled)
+        self.assertEqual(cfg2.f1.key_char, "Y")
+
+    def test_is_raikiri_paddle_device(self):
+        # Raikiri II Pro PID matching Collection 3 (UsagePage 0xFFC3, Usage 0x0001 or 0x0002)
+        pro_dev_usage1 = {"product_id": hardware.PID_RAIKIRI_II_PRO, "usage": 0x0001, "usage_page": 0xFFC3, "interface_number": 3}
+        self.assertTrue(hardware.is_raikiri_paddle_device(pro_dev_usage1))
+
+        pro_dev_usage2 = {"product_id": hardware.PID_RAIKIRI_II_PRO, "usage": 0x0002, "usage_page": 0xFFC3, "interface_number": 3}
+        self.assertTrue(hardware.is_raikiri_paddle_device(pro_dev_usage2))
+
+        # Raikiri II Pro on wrong collections (e.g. 0xFFC0, 0xFFC1, 0xFFC2) or wrong usages
+        pro_dev_col0 = {"product_id": hardware.PID_RAIKIRI_II_PRO, "usage": 0x0001, "usage_page": 0xFFC2, "interface_number": 0}
+        self.assertFalse(hardware.is_raikiri_paddle_device(pro_dev_col0))
+
+        pro_dev_col1 = {"product_id": hardware.PID_RAIKIRI_II_PRO, "usage": 0x0001, "usage_page": 0xFFC0, "interface_number": 1}
+        self.assertFalse(hardware.is_raikiri_paddle_device(pro_dev_col1))
+
+        pro_dev_wrong_usage = {"product_id": hardware.PID_RAIKIRI_II_PRO, "usage": 0x0005, "usage_page": 0xFFC3, "interface_number": 3}
+        self.assertFalse(hardware.is_raikiri_paddle_device(pro_dev_wrong_usage))
+
+        # Standard Raikiri II (legacy 0xC3 usage page)
+        std_dev = {"product_id": 0x1A1B, "usage_page": 0xFFC3, "interface_number": 2}
+        self.assertTrue(hardware.is_raikiri_paddle_device(std_dev))
+
+        # Non-matching device
+        other_dev = {"product_id": 0x1A1B, "usage_page": 0x0001, "interface_number": 0}
+        self.assertFalse(hardware.is_raikiri_paddle_device(other_dev))
+
+    def test_is_valid_paddle_packet_pro(self):
+        # Valid Raikiri Pro Report 0x04 packet (Report ID 0x04, Opcode 0x12 0x05, len >= 7)
+        pro_pkt = [0x04, 0x12, 0x05, 0x00, 0x00, 0x01, 0x00]
+        self.assertTrue(hardware.is_valid_paddle_packet(pro_pkt, is_pro=True))
+        self.assertTrue(hardware.is_valid_paddle_packet(pro_pkt, is_pro=False))  # Auto-detected via report_id 0x04
+
+        # Invalid Pro packet (wrong opcode)
+        pro_invalid_op = [0x04, 0x11, 0x05, 0x00, 0x00, 0x01, 0x00]
+        self.assertFalse(hardware.is_valid_paddle_packet(pro_invalid_op, is_pro=True))
+
+        # Invalid Pro packet (too short)
+        pro_short = [0x04, 0x12, 0x05]
+        self.assertFalse(hardware.is_valid_paddle_packet(pro_short, is_pro=True))
+
+    def test_controller_manager_pro_state_and_callback(self):
+        p = models.Profile()
+        mgr = hardware.ControllerManager(p)
+        self.assertEqual(mgr.detected_model, models.ControllerModel.RAIKIRI_II)
+
+        # Check all ButtonStates exist
+        self.assertIsInstance(mgr.m5_state, models.ButtonState)
+        self.assertIsInstance(mgr.m6_state, models.ButtonState)
+        self.assertIsInstance(mgr.f1_state, models.ButtonState)
+        self.assertIsInstance(mgr.f2_state, models.ButtonState)
+        self.assertIsInstance(mgr.f3_state, models.ButtonState)
+        self.assertIsInstance(mgr.f4_state, models.ButtonState)
+
+        # Verify on_model_detected hook
+        detected = []
+        mgr.on_model_detected = lambda m: detected.append(m)
+        mgr._set_detected_model(models.ControllerModel.RAIKIRI_II_PRO)
+        self.assertEqual(len(detected), 1)
+        self.assertEqual(detected[0], models.ControllerModel.RAIKIRI_II_PRO)
+        self.assertEqual(mgr.detected_model, models.ControllerModel.RAIKIRI_II_PRO)
+
+        # Verify _cancel_and_release_all_paddles clears Pro buttons
+        mgr.m5_state.pressed = True
+        mgr.f1_state.pressed = True
+        mgr._cancel_and_release_all_paddles()
+        self.assertFalse(mgr.m5_state.pressed)
+        self.assertFalse(mgr.f1_state.pressed)
+
+    def test_raikiri_pro_packet_decoding_bits(self):
+        # Test Raikiri II Pro bit unpacking:
+        # byte 5: M1=bit0, M2=bit1, M3=bit2, M4=bit3, M5=bit4, M6=bit5, F1=bit6, F2=bit7
+        # byte 6: F3=bit0, F4=bit1
+        # Set M5 (0x10) and F1 (0x40) -> 0x50 in data[5]
+        # Set F4 (0x02) in data[6]
+        data = [0x04, 0x12, 0x05, 0x00, 0x00, 0x50, 0x02]
+
+        b5 = data[5]
+        m1 = bool(b5 & 0x01)
+        m2 = bool(b5 & 0x02)
+        m3 = bool(b5 & 0x04)
+        m4 = bool(b5 & 0x08)
+        m5 = bool(b5 & 0x10)
+        m6 = bool(b5 & 0x20)
+        f1 = bool(b5 & 0x40)
+        f2 = bool(b5 & 0x80)
+
+        b6 = data[6]
+        f3 = bool(b6 & 0x01)
+        f4 = bool(b6 & 0x02)
+
+        self.assertFalse(m1)
+        self.assertFalse(m2)
+        self.assertFalse(m3)
+        self.assertFalse(m4)
+        self.assertTrue(m5)
+        self.assertFalse(m6)
+        self.assertTrue(f1)
+        self.assertFalse(f2)
+        self.assertFalse(f3)
+        self.assertTrue(f4)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 

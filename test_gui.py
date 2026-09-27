@@ -114,6 +114,39 @@ class TestMainWindow(unittest.TestCase):
         self.assertIsNotNone(win.update_btn)
         self.assertEqual(win.update_btn.text(), "Check for Updates")
 
+    def test_pro_buttons_visibility_and_toggle_options(self):
+        p = models.Profile(name="TestGUIProfilePro")
+        mgr = hardware.ControllerManager(p)
+        win = gui.main_window.MainWindow(mgr)
+
+        # 1. By default, pro buttons container should be hidden
+        self.assertFalse(win.pro_buttons_container.isVisible())
+
+        # 2. Check each layer tab contains m5, m6, f1-f4 in rows_map
+        for layer_rows in win.layer_ui_rows:
+            for btn_key in ["m5", "m6", "f1", "f2", "f3", "f4"]:
+                self.assertIn(btn_key, layer_rows)
+
+        # 3. Initially, toggle options should be standard 7 options
+        std_options = ["None", "M1", "M2", "M3", "M4", "Command", "Library"]
+        t1_items = [win.t1_combo.itemText(i) for i in range(win.t1_combo.count())]
+        self.assertEqual(t1_items, std_options)
+
+        # 4. Trigger model detection callback for ROG Raikiri II Pro
+        win.manager.on_model_detected(models.ControllerModel.RAIKIRI_II_PRO)
+        self.assertTrue(win.pro_buttons_container.isVisible())
+
+        # Check toggle combos updated with Pro buttons
+        pro_options = std_options + ["M5", "M6", "F1", "F2", "F3", "F4"]
+        t1_items_pro = [win.t1_combo.itemText(i) for i in range(win.t1_combo.count())]
+        self.assertEqual(t1_items_pro, pro_options)
+
+        # 5. Trigger model detection callback for standard Raikiri II -> should hide again
+        win.manager.on_model_detected(models.ControllerModel.RAIKIRI_II)
+        self.assertFalse(win.pro_buttons_container.isVisible())
+        t1_items_std = [win.t1_combo.itemText(i) for i in range(win.t1_combo.count())]
+        self.assertEqual(t1_items_std, std_options)
+
 
 class TestUpdateDialogs(unittest.TestCase):
     def test_update_available_dialog(self):

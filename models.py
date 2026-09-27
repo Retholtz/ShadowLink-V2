@@ -16,6 +16,11 @@ class DeviceStatus(str, Enum):
     CONNECTED = "Connected"
 
 
+class ControllerModel(str, Enum):
+    RAIKIRI_II = "ROG Raikiri II"
+    RAIKIRI_II_PRO = "ROG Raikiri II Pro"
+
+
 @dataclass
 class PaddleBind:
     enabled: bool = True
@@ -72,6 +77,14 @@ class LayerConfig:
     cmd: PaddleBind = field(default_factory=lambda: PaddleBind(key_char="1"))
     lib: PaddleBind = field(default_factory=lambda: PaddleBind(key_char="2"))
 
+    # ROG Raikiri II Pro Paddles & Function Buttons
+    m5: PaddleBind = field(default_factory=lambda: PaddleBind(enabled=False, key_char="7"))
+    m6: PaddleBind = field(default_factory=lambda: PaddleBind(enabled=False, key_char="8"))
+    f1: PaddleBind = field(default_factory=lambda: PaddleBind(enabled=False, key_char="9"))
+    f2: PaddleBind = field(default_factory=lambda: PaddleBind(enabled=False, key_char="0"))
+    f3: PaddleBind = field(default_factory=lambda: PaddleBind(enabled=False, key_char="-"))
+    f4: PaddleBind = field(default_factory=lambda: PaddleBind(enabled=False, key_char="="))
+
     # Triggers & Face Buttons
     lb: PaddleBind = field(default_factory=lambda: PaddleBind(enabled=False, key_char="Xbox_LB"))
     rb: PaddleBind = field(default_factory=lambda: PaddleBind(enabled=False, key_char="Xbox_RB"))
@@ -104,6 +117,7 @@ class LayerConfig:
         }
         for attr in [
             "m1", "m2", "m3", "m4", "cmd", "lib",
+            "m5", "m6", "f1", "f2", "f3", "f4",
             "lb", "rb", "lt", "rt", "a", "b", "x", "y",
             "l3", "r3", "d_up", "d_down", "d_left", "d_right",
             "m1_m2", "m1_m3", "m1_m4", "m2_m3", "m2_m4", "m3_m4", "cmd_lib"
@@ -120,6 +134,7 @@ class LayerConfig:
         )
         field_map = {
             "m1": "m1", "m2": "m2", "m3": "m3", "m4": "m4", "cmd": "cmd", "lib": "lib",
+            "m5": "m5", "m6": "m6", "f1": "f1", "f2": "f2", "f3": "f3", "f4": "f4",
             "lb": "lb", "rb": "rb", "lt": "lt", "rt": "rt", "a": "a", "b": "b",
             "x": "x", "y": "y", "l3": "l3", "r3": "r3",
             "d_up": "d_up", "dUp": "d_up",
@@ -135,8 +150,9 @@ class LayerConfig:
             "cmd_lib": "cmd_lib", "cmdLib": "cmd_lib",
         }
         for key, val in data.items():
-            if key in field_map and isinstance(val, dict):
-                setattr(config, field_map[key], PaddleBind.from_dict(val))
+            mapped_key = field_map.get(key) or field_map.get(key.lower())
+            if mapped_key and isinstance(val, dict):
+                setattr(config, mapped_key, PaddleBind.from_dict(val))
         return config
 
 
