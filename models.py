@@ -110,6 +110,17 @@ class LayerConfig:
     m3_m4: PaddleBind = field(default_factory=lambda: PaddleBind(enabled=False))
     cmd_lib: PaddleBind = field(default_factory=lambda: PaddleBind(enabled=False))
 
+    # Raikiri II Pro Combos (M5 & M6)
+    m1_m5: PaddleBind = field(default_factory=lambda: PaddleBind(enabled=False))
+    m1_m6: PaddleBind = field(default_factory=lambda: PaddleBind(enabled=False))
+    m2_m5: PaddleBind = field(default_factory=lambda: PaddleBind(enabled=False))
+    m2_m6: PaddleBind = field(default_factory=lambda: PaddleBind(enabled=False))
+    m3_m5: PaddleBind = field(default_factory=lambda: PaddleBind(enabled=False))
+    m3_m6: PaddleBind = field(default_factory=lambda: PaddleBind(enabled=False))
+    m4_m5: PaddleBind = field(default_factory=lambda: PaddleBind(enabled=False))
+    m4_m6: PaddleBind = field(default_factory=lambda: PaddleBind(enabled=False))
+    m5_m6: PaddleBind = field(default_factory=lambda: PaddleBind(enabled=False))
+
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
             "name": self.name,
@@ -120,7 +131,8 @@ class LayerConfig:
             "m5", "m6", "f1", "f2", "f3", "f4",
             "lb", "rb", "lt", "rt", "a", "b", "x", "y",
             "l3", "r3", "d_up", "d_down", "d_left", "d_right",
-            "m1_m2", "m1_m3", "m1_m4", "m2_m3", "m2_m4", "m3_m4", "cmd_lib"
+            "m1_m2", "m1_m3", "m1_m4", "m2_m3", "m2_m4", "m3_m4", "cmd_lib",
+            "m1_m5", "m1_m6", "m2_m5", "m2_m6", "m3_m5", "m3_m6", "m4_m5", "m4_m6", "m5_m6"
         ]:
             bind_obj = getattr(self, attr)
             result[attr] = bind_obj.to_dict()
@@ -148,6 +160,15 @@ class LayerConfig:
             "m2_m4": "m2_m4", "m2M4": "m2_m4",
             "m3_m4": "m3_m4", "m3M4": "m3_m4",
             "cmd_lib": "cmd_lib", "cmdLib": "cmd_lib",
+            "m1_m5": "m1_m5", "m1M5": "m1_m5",
+            "m1_m6": "m1_m6", "m1M6": "m1_m6",
+            "m2_m5": "m2_m5", "m2M5": "m2_m5",
+            "m2_m6": "m2_m6", "m2M6": "m2_m6",
+            "m3_m5": "m3_m5", "m3M5": "m3_m5",
+            "m3_m6": "m3_m6", "m3M6": "m3_m6",
+            "m4_m5": "m4_m5", "m4M5": "m4_m5",
+            "m4_m6": "m4_m6", "m4M6": "m4_m6",
+            "m5_m6": "m5_m6", "m5M6": "m5_m6",
         }
         for key, val in data.items():
             mapped_key = field_map.get(key) or field_map.get(key.lower())

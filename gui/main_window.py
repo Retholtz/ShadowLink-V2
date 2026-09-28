@@ -73,12 +73,12 @@ logger = logging.getLogger("ShadowLink.MainWindow")
 
 class ProButtonsContainer(QWidget):
     """
-    Dedicated container widget for ROG Raikiri II Pro buttons (M5, M6, F1-F4).
-    Syncs visibility across all layer tab instances.
+    Dedicated container widget coordinator for ROG Raikiri II Pro buttons (M5, M6, F1-F4)
+    and Pro combos (M1+M5 through M5+M6). Syncs visibility across all layer tab instances.
     """
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self._all_containers: list[QWidget] = [self]
+        self._all_containers: list[QWidget] = []
         self._explicit_visible: bool = False
 
     def register_container(self, c: QWidget) -> None:
@@ -92,9 +92,7 @@ class ProButtonsContainer(QWidget):
             QWidget.setVisible(c, visible)
 
     def isVisible(self) -> bool:
-        if super().isVisible():
-            return True
-        return self._explicit_visible and not self.isHidden()
+        return self._explicit_visible
 
 
 class CheckUpdateWorker(QThread):
@@ -238,6 +236,15 @@ class MainWindow(QMainWindow):
         self.theme_btn.clicked.connect(self._on_toggle_theme)
         p_layout.addWidget(self.theme_btn)
 
+        # Pro Layout Preview toggle button
+        self.is_pro_preview: bool = False
+        self.pro_preview_btn = QPushButton("Preview Pro: Off")
+        self.pro_preview_btn.setCheckable(True)
+        self.pro_preview_btn.setChecked(False)
+        self.pro_preview_btn.setToolTip("Toggle to preview ASUS ROG Raikiri II Pro layout and extra buttons")
+        self.pro_preview_btn.clicked.connect(self._on_toggle_preview_pro)
+        p_layout.addWidget(self.pro_preview_btn)
+
         profile_card.main_layout.addLayout(p_layout)
         header_layout.addWidget(profile_card)
 
@@ -284,6 +291,10 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(pref_card)
 
         main_layout.addLayout(header_layout)
+
+        # Raikiri II Pro buttons container manager
+        self.pro_buttons_container = ProButtonsContainer()
+        self.pro_buttons_containers = self.pro_buttons_container._all_containers
 
         # 2. MAIN TABS (5 LAYERS + SETTINGS)
         self.main_tabs = QTabWidget()
@@ -409,16 +420,7 @@ class MainWindow(QMainWindow):
         sub_tabs.addTab(self._build_paddle_mapping_ui(layer_config, rows_map), " Back Paddles ")
 
         # 2. Paddle Combos
-        combos = [
-            ("m1_m2", "M1 + M2", layer_config.m1_m2),
-            ("m1_m3", "M1 + M3", layer_config.m1_m3),
-            ("m1_m4", "M1 + M4", layer_config.m1_m4),
-            ("m2_m3", "M2 + M3", layer_config.m2_m3),
-            ("m2_m4", "M2 + M4", layer_config.m2_m4),
-            ("m3_m4", "M3 + M4", layer_config.m3_m4),
-            ("cmd_lib", "Cmd + Lib", layer_config.cmd_lib),
-        ]
-        sub_tabs.addTab(create_scroll_panel(combos), " Paddle Combos ")
+        sub_tabs.addTab(self._build_paddle_combos_ui(layer_config, rows_map), " Paddle Combos ")
 
         # 3. Standard Inputs
         standards = [
@@ -478,12 +480,11 @@ class MainWindow(QMainWindow):
 
         # Dedicated container widget for Pro buttons (M5, M6, F1, F2, F3, F4) directly below M1-M4
         if not hasattr(self, "pro_buttons_container") or self.pro_buttons_container is None:
-            pro_box = ProButtonsContainer()
-            self.pro_buttons_container = pro_box
-            self.pro_buttons_containers = pro_box._all_containers
-        else:
-            pro_box = QWidget()
-            self.pro_buttons_container.register_container(pro_box)
+            self.pro_buttons_container = ProButtonsContainer()
+            self.pro_buttons_containers = self.pro_buttons_container._all_containers
+
+        pro_box = QWidget()
+        self.pro_buttons_container.register_container(pro_box)
 
         pro_layout = QVBoxLayout(pro_box)
         pro_layout.setContentsMargins(0, 0, 0, 0)
@@ -504,8 +505,77 @@ class MainWindow(QMainWindow):
             rows_map[key_id] = row
             pro_layout.addWidget(row)
 
-        pro_box.setVisible(False)
+        pro_box.setVisible(self.pro_buttons_container.isVisible())
         c_layout.addWidget(pro_box)
+        c_layout.addStretch()
+
+        scroll.setWidget(container)
+        return scroll
+
+    def _build_paddle_combos_ui(
+        self,
+        layer_config: Optional[LayerConfig] = None,
+        rows_map: Optional[dict[str, PaddleRowWidget]] = None,
+    ) -> QWidget:
+        if layer_config is None:
+            layer_config = self.active_profile.layers[0] if hasattr(self, "active_profile") and self.active_profile.layers else LayerConfig()
+        if rows_map is None:
+            rows_map = {}
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        c_layout = QVBoxLayout(container)
+        c_layout.setContentsMargins(6, 6, 6, 6)
+        c_layout.setSpacing(6)
+
+        base_combos = [
+            ("m1_m2", "M1 + M2", layer_config.m1_m2),
+            ("m1_m3", "M1 + M3", layer_config.m1_m3),
+            ("m1_m4", "M1 + M4", layer_config.m1_m4),
+            ("m2_m3", "M2 + M3", layer_config.m2_m3),
+            ("m2_m4", "M2 + M4", layer_config.m2_m4),
+            ("m3_m4", "M3 + M4", layer_config.m3_m4),
+            ("cmd_lib", "Cmd + Lib", layer_config.cmd_lib),
+        ]
+        for key_id, display_title, bind_obj in base_combos:
+            row = PaddleRowWidget(display_title, bind_obj)
+            row.open_recorder.connect(self._open_macro_recorder)
+            row.open_editor.connect(self._open_macro_editor)
+            rows_map[key_id] = row
+            c_layout.addWidget(row)
+
+        if not hasattr(self, "pro_buttons_container") or self.pro_buttons_container is None:
+            self.pro_buttons_container = ProButtonsContainer()
+            self.pro_buttons_containers = self.pro_buttons_container._all_containers
+
+        pro_combos_box = QWidget()
+        self.pro_buttons_container.register_container(pro_combos_box)
+
+        pro_combos_layout = QVBoxLayout(pro_combos_box)
+        pro_combos_layout.setContentsMargins(0, 0, 0, 0)
+        pro_combos_layout.setSpacing(6)
+
+        pro_combos = [
+            ("m1_m5", "M1 + M5", layer_config.m1_m5),
+            ("m1_m6", "M1 + M6", layer_config.m1_m6),
+            ("m2_m5", "M2 + M5", layer_config.m2_m5),
+            ("m2_m6", "M2 + M6", layer_config.m2_m6),
+            ("m3_m5", "M3 + M5", layer_config.m3_m5),
+            ("m3_m6", "M3 + M6", layer_config.m3_m6),
+            ("m4_m5", "M4 + M5", layer_config.m4_m5),
+            ("m4_m6", "M4 + M6", layer_config.m4_m6),
+            ("m5_m6", "M5 + M6", layer_config.m5_m6),
+        ]
+        for key_id, display_title, bind_obj in pro_combos:
+            row = PaddleRowWidget(display_title, bind_obj)
+            row.open_recorder.connect(self._open_macro_recorder)
+            row.open_editor.connect(self._open_macro_editor)
+            rows_map[key_id] = row
+            pro_combos_layout.addWidget(row)
+
+        pro_combos_box.setVisible(self.pro_buttons_container.isVisible())
+        c_layout.addWidget(pro_combos_box)
         c_layout.addStretch()
 
         scroll.setWidget(container)
@@ -972,6 +1042,12 @@ class MainWindow(QMainWindow):
         self.profile_combo.setCurrentText(new_profile.name)
         show_osd(f"Profile: {new_profile.name}", corner=self.osd_combo.currentText())
 
+    def _on_toggle_preview_pro(self) -> None:
+        self.is_pro_preview = self.pro_preview_btn.isChecked()
+        self.pro_preview_btn.setText("Preview Pro: On" if self.is_pro_preview else "Preview Pro: Off")
+        effective_model = ControllerModel.RAIKIRI_II_PRO if self.is_pro_preview else self.manager.detected_model
+        self._on_model_detected(effective_model)
+
     def _handle_model_detected(self, model: ControllerModel) -> None:
         if threading.current_thread() is threading.main_thread():
             self._on_model_detected(model)
@@ -980,7 +1056,7 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_model_detected(self, model: ControllerModel) -> None:
-        is_pro = (model == ControllerModel.RAIKIRI_II_PRO)
+        is_pro = (model == ControllerModel.RAIKIRI_II_PRO) or getattr(self, "is_pro_preview", False)
         if hasattr(self, "pro_buttons_container") and self.pro_buttons_container is not None:
             self.pro_buttons_container.setVisible(is_pro)
 

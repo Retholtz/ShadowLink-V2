@@ -122,9 +122,10 @@ class TestMainWindow(unittest.TestCase):
         # 1. By default, pro buttons container should be hidden
         self.assertFalse(win.pro_buttons_container.isVisible())
 
-        # 2. Check each layer tab contains m5, m6, f1-f4 in rows_map
+        # 2. Check each layer tab contains m5, m6, f1-f4 and all 9 Pro combos in rows_map
+        pro_combo_keys = ["m1_m5", "m1_m6", "m2_m5", "m2_m6", "m3_m5", "m3_m6", "m4_m5", "m4_m6", "m5_m6"]
         for layer_rows in win.layer_ui_rows:
-            for btn_key in ["m5", "m6", "f1", "f2", "f3", "f4"]:
+            for btn_key in ["m5", "m6", "f1", "f2", "f3", "f4"] + pro_combo_keys:
                 self.assertIn(btn_key, layer_rows)
 
         # 3. Initially, toggle options should be standard 7 options
@@ -132,16 +133,35 @@ class TestMainWindow(unittest.TestCase):
         t1_items = [win.t1_combo.itemText(i) for i in range(win.t1_combo.count())]
         self.assertEqual(t1_items, std_options)
 
-        # 4. Trigger model detection callback for ROG Raikiri II Pro
+        # 4. Test Preview Pro button toggle
+        self.assertIsNotNone(win.pro_preview_btn)
+        self.assertEqual(win.pro_preview_btn.text(), "Preview Pro: Off")
+        self.assertFalse(win.is_pro_preview)
+
+        # Click to turn preview On
+        win.pro_preview_btn.click()
+        self.assertTrue(win.is_pro_preview)
+        self.assertEqual(win.pro_preview_btn.text(), "Preview Pro: On")
+        self.assertTrue(win.pro_buttons_container.isVisible())
+        pro_options = std_options + ["M5", "M6", "F1", "F2", "F3", "F4"]
+        t1_items_prev = [win.t1_combo.itemText(i) for i in range(win.t1_combo.count())]
+        self.assertEqual(t1_items_prev, pro_options)
+
+        # Click to turn preview Off
+        win.pro_preview_btn.click()
+        self.assertFalse(win.is_pro_preview)
+        self.assertEqual(win.pro_preview_btn.text(), "Preview Pro: Off")
+        self.assertFalse(win.pro_buttons_container.isVisible())
+
+        # 5. Trigger model detection callback for ROG Raikiri II Pro
         win.manager.on_model_detected(models.ControllerModel.RAIKIRI_II_PRO)
         self.assertTrue(win.pro_buttons_container.isVisible())
 
         # Check toggle combos updated with Pro buttons
-        pro_options = std_options + ["M5", "M6", "F1", "F2", "F3", "F4"]
         t1_items_pro = [win.t1_combo.itemText(i) for i in range(win.t1_combo.count())]
         self.assertEqual(t1_items_pro, pro_options)
 
-        # 5. Trigger model detection callback for standard Raikiri II -> should hide again
+        # 6. Trigger model detection callback for standard Raikiri II -> should hide again
         win.manager.on_model_detected(models.ControllerModel.RAIKIRI_II)
         self.assertFalse(win.pro_buttons_container.isVisible())
         t1_items_std = [win.t1_combo.itemText(i) for i in range(win.t1_combo.count())]

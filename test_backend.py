@@ -538,6 +538,74 @@ class TestRaikiriPro(unittest.TestCase):
         self.assertFalse(f3)
         self.assertTrue(f4)
 
+    def test_is_raikiri_dongle_or_device(self):
+        # ASUS Keyboard / Mouse (PID 0x19B6, usage page 0x01) -> Must be rejected as false positive
+        keyboard_node = {
+            "vendor_id": 0x0B05,
+            "product_id": 0x19B6,
+            "product_string": "ROG Flare II Animate Gaming Keyboard",
+            "usage_page": 0x01,
+            "usage": 0x06,
+        }
+        self.assertFalse(hardware.is_raikiri_dongle_or_device(keyboard_node))
+
+        # Raikiri II Pro by PID
+        pro_node = {
+            "vendor_id": 0x0B05,
+            "product_id": hardware.PID_RAIRIKI_II_PRO if hasattr(hardware, "PID_RAIRIKI_II_PRO") else hardware.PID_RAIKIRI_II_PRO,
+            "product_string": "ASUS ROG Controller",
+            "usage_page": 0xFFC3,
+            "usage": 0x0001,
+        }
+        self.assertTrue(hardware.is_raikiri_dongle_or_device(pro_node))
+
+        # Standard Raikiri by product name
+        std_name_node = {
+            "vendor_id": 0x0B05,
+            "product_id": 0x1A38,
+            "product_string": "ROG Raikiri Pro Wireless Dongle",
+            "usage_page": 0x01,
+            "usage": 0x05,
+        }
+        self.assertTrue(hardware.is_raikiri_dongle_or_device(std_name_node))
+
+        # Device matching usage page 0xC3
+        c3_node = {
+            "vendor_id": 0x0B05,
+            "product_id": 0x1000,
+            "product_string": "Unknown ASUS Device",
+            "usage_page": 0xFFC3,
+            "usage": 0x0001,
+        }
+        self.assertTrue(hardware.is_raikiri_dongle_or_device(c3_node))
+
+    def test_m5_m6_combos_state_and_roundtrip(self):
+        p = models.Profile(name="ProCombosTest")
+        layer = p.layers[0]
+        combo_keys = ["m1_m5", "m1_m6", "m2_m5", "m2_m6", "m3_m5", "m3_m6", "m4_m5", "m4_m6", "m5_m6"]
+        for k in combo_keys:
+            self.assertTrue(hasattr(layer, k))
+            getattr(layer, k).enabled = True
+            getattr(layer, k).key_char = "X"
+
+        d = p.to_dict()
+        p2 = models.Profile.from_dict(d)
+        for k in combo_keys:
+            self.assertTrue(getattr(p2.layers[0], k).enabled)
+            self.assertEqual(getattr(p2.layers[0], k).key_char, "X")
+
+        mgr = hardware.ControllerManager(p)
+        for k in combo_keys:
+            state_attr = f"{k}_state"
+            self.assertTrue(hasattr(mgr, state_attr))
+            state = getattr(mgr, state_attr)
+            self.assertIsInstance(state, models.ButtonState)
+            state.pressed = True
+
+        mgr._cancel_and_release_all_paddles()
+        for k in combo_keys:
+            self.assertFalse(getattr(mgr, f"{k}_state").pressed)
+
 
 if __name__ == "__main__":
     unittest.main()

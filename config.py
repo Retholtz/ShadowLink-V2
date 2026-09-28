@@ -265,6 +265,15 @@ def import_properties_profile(file_path: Path) -> Profile:
         load_bind(f"M2M4{suffix}", layer.m2_m4)
         load_bind(f"M3M4{suffix}", layer.m3_m4)
         load_bind(f"CMDLIB{suffix}", layer.cmd_lib)
+        load_bind(f"M1M5{suffix}", layer.m1_m5)
+        load_bind(f"M1M6{suffix}", layer.m1_m6)
+        load_bind(f"M2M5{suffix}", layer.m2_m5)
+        load_bind(f"M2M6{suffix}", layer.m2_m6)
+        load_bind(f"M3M5{suffix}", layer.m3_m5)
+        load_bind(f"M3M6{suffix}", layer.m3_m6)
+        load_bind(f"M4M5{suffix}", layer.m4_m5)
+        load_bind(f"M4M6{suffix}", layer.m4_m6)
+        load_bind(f"M5M6{suffix}", layer.m5_m6)
 
     logger.info(f"Imported legacy profile from '{file_path.name}'")
     return p

@@ -164,6 +164,17 @@ def get_fluent_stylesheet(is_dark: bool) -> str:
         border-color: {border_subtle};
     }}
 
+    QPushButton:checked {{
+        background-color: {accent_color};
+        color: #ffffff;
+        border: 1px solid {accent_hover};
+        font-weight: 600;
+    }}
+
+    QPushButton:checked:hover {{
+        background-color: {accent_hover};
+    }}
+
     QPushButton#accentButton {{
         background-color: {accent_color};
         color: #ffffff;

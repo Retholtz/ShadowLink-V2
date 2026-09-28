@@ -85,6 +85,23 @@ def is_raikiri_paddle_device(device_info: dict) -> bool:
     )
 
 
+def is_raikiri_dongle_or_device(device_info: dict) -> bool:
+    """
+    Check if a device info dict matches an ASUS Raikiri controller/dongle node,
+    distinguishing it from non-controller ASUS peripherals (such as ASUS keyboards and mice).
+    """
+    pid = device_info.get("product_id", 0)
+    if pid == PID_RAIKIRI_II_PRO:
+        return True
+    prod_name = (device_info.get("product_string") or "").lower()
+    if "raikiri" in prod_name:
+        return True
+    up = device_info.get("usage_page", 0)
+    if (up & 0xFF) == 0xC3:
+        return True
+    return False
+
+
 def is_valid_paddle_packet(data: list[int] | bytes, is_pro: bool = False) -> bool:
     """
     Validates that an incoming HID report is a genuine ROG Raikiri paddle report.
@@ -173,6 +190,17 @@ class ControllerManager:
         self.m2_m4_state = ButtonState()
         self.m3_m4_state = ButtonState()
         self.cmd_lib_state = ButtonState()
+
+        # Raikiri II Pro Combos
+        self.m1_m5_state = ButtonState()
+        self.m1_m6_state = ButtonState()
+        self.m2_m5_state = ButtonState()
+        self.m2_m6_state = ButtonState()
+        self.m3_m5_state = ButtonState()
+        self.m3_m6_state = ButtonState()
+        self.m4_m5_state = ButtonState()
+        self.m4_m6_state = ButtonState()
+        self.m5_m6_state = ButtonState()
 
         # Standard button states (14 controls)
         self.std_states = [ButtonState() for _ in range(14)]
@@ -272,6 +300,11 @@ class ControllerManager:
             self.m1_m2_state, self.m1_m3_state, self.m1_m4_state,
             self.m2_m3_state, self.m2_m4_state, self.m3_m4_state,
             self.cmd_lib_state,
+            self.m1_m5_state, self.m1_m6_state,
+            self.m2_m5_state, self.m2_m6_state,
+            self.m3_m5_state, self.m3_m6_state,
+            self.m4_m5_state, self.m4_m6_state,
+            self.m5_m6_state,
         ]
         for s in all_states:
             s.cancel_and_release(release_action_fn=keymap.release_key_bind)
@@ -587,6 +620,17 @@ class ControllerManager:
                 handle_combo("M3", debounced_s3, "M4", debounced_s4, self.m3_m4_state, cl.m3_m4, self.m3_state, self.m4_state)
                 handle_combo("Command", debounced_cmd, "Library", debounced_lib, self.cmd_lib_state, cl.cmd_lib, self.cmd_state, self.lib_state)
 
+                # Raikiri II Pro Combos (M5 & M6)
+                handle_combo("M1", debounced_s1, "M5", debounced_s5, self.m1_m5_state, cl.m1_m5, self.m1_state, self.m5_state)
+                handle_combo("M1", debounced_s1, "M6", debounced_s6, self.m1_m6_state, cl.m1_m6, self.m1_state, self.m6_state)
+                handle_combo("M2", debounced_s2, "M5", debounced_s5, self.m2_m5_state, cl.m2_m5, self.m2_state, self.m5_state)
+                handle_combo("M2", debounced_s2, "M6", debounced_s6, self.m2_m6_state, cl.m2_m6, self.m2_state, self.m6_state)
+                handle_combo("M3", debounced_s3, "M5", debounced_s5, self.m3_m5_state, cl.m3_m5, self.m3_state, self.m5_state)
+                handle_combo("M3", debounced_s3, "M6", debounced_s6, self.m3_m6_state, cl.m3_m6, self.m3_state, self.m6_state)
+                handle_combo("M4", debounced_s4, "M5", debounced_s5, self.m4_m5_state, cl.m4_m5, self.m4_state, self.m5_state)
+                handle_combo("M4", debounced_s4, "M6", debounced_s6, self.m4_m6_state, cl.m4_m6, self.m4_state, self.m6_state)
+                handle_combo("M5", debounced_s5, "M6", debounced_s6, self.m5_m6_state, cl.m5_m6, self.m5_state, self.m6_state)
+
                 # Handle Singles for all 10 buttons (+ Command and Library)
                 def handle_single(name: str, state: bool, bs: ButtonState, bind: PaddleBind) -> None:
                     if name in consumed:
@@ -764,11 +808,12 @@ class ControllerManager:
                             f"Usage={hex(d.get('usage', 0))} "
                             f"Path={d.get('path')}"
                         )
-                    dongle_present = len(devices) > 0
+                    raikiri_devices = [d for d in devices if is_raikiri_dongle_or_device(d)]
+                    dongle_present = len(raikiri_devices) > 0
 
                     if dongle_present:
                         self.last_dongle_seen_time = now
-                        paddle_dev = next((d for d in devices if is_raikiri_paddle_device(d)), None)
+                        paddle_dev = next((d for d in raikiri_devices if is_raikiri_paddle_device(d)), None)
                         if paddle_dev:
                             if paddle_dev.get("product_id") == PID_RAIKIRI_II_PRO:
                                 self._set_detected_model(ControllerModel.RAIKIRI_II_PRO)
