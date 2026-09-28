@@ -416,8 +416,8 @@ class MainWindow(QMainWindow):
             scroll.setWidget(container)
             return scroll
 
-        # 1. Back Paddles (includes M1-M4 and Pro buttons M5, M6, F1-F4)
-        sub_tabs.addTab(self._build_paddle_mapping_ui(layer_config, rows_map), " Back Paddles ")
+        # 1. Extra Buttons (includes M1-M4 and Pro buttons M5, M6, F1-F4)
+        sub_tabs.addTab(self._build_paddle_mapping_ui(layer_config, rows_map), " Extra Buttons ")
 
         # 2. Paddle Combos
         sub_tabs.addTab(self._build_paddle_combos_ui(layer_config, rows_map), " Paddle Combos ")
@@ -529,55 +529,52 @@ class MainWindow(QMainWindow):
         c_layout.setContentsMargins(6, 6, 6, 6)
         c_layout.setSpacing(6)
 
-        base_combos = [
-            ("m1_m2", "M1 + M2", layer_config.m1_m2),
-            ("m1_m3", "M1 + M3", layer_config.m1_m3),
-            ("m1_m4", "M1 + M4", layer_config.m1_m4),
-            ("m2_m3", "M2 + M3", layer_config.m2_m3),
-            ("m2_m4", "M2 + M4", layer_config.m2_m4),
-            ("m3_m4", "M3 + M4", layer_config.m3_m4),
-            ("cmd_lib", "Cmd + Lib", layer_config.cmd_lib),
-        ]
-        for key_id, display_title, bind_obj in base_combos:
-            row = PaddleRowWidget(display_title, bind_obj)
-            row.open_recorder.connect(self._open_macro_recorder)
-            row.open_editor.connect(self._open_macro_editor)
-            rows_map[key_id] = row
-            c_layout.addWidget(row)
-
         if not hasattr(self, "pro_buttons_container") or self.pro_buttons_container is None:
             self.pro_buttons_container = ProButtonsContainer()
             self.pro_buttons_containers = self.pro_buttons_container._all_containers
 
-        pro_combos_box = QWidget()
-        self.pro_buttons_container.register_container(pro_combos_box)
+        # Ordered combos list: (key_id, display_title, bind_obj, is_pro)
+        combos_spec = [
+            # M1 Combos
+            ("m1_m2", "M1 + M2", layer_config.m1_m2, False),
+            ("m1_m3", "M1 + M3", layer_config.m1_m3, False),
+            ("m1_m4", "M1 + M4", layer_config.m1_m4, False),
+            ("m1_m5", "M1 + M5", layer_config.m1_m5, True),
+            ("m1_m6", "M1 + M6", layer_config.m1_m6, True),
 
-        pro_combos_layout = QVBoxLayout(pro_combos_box)
-        pro_combos_layout.setContentsMargins(0, 0, 0, 0)
-        pro_combos_layout.setSpacing(6)
+            # M2 Combos
+            ("m2_m3", "M2 + M3", layer_config.m2_m3, False),
+            ("m2_m4", "M2 + M4", layer_config.m2_m4, False),
+            ("m2_m5", "M2 + M5", layer_config.m2_m5, True),
+            ("m2_m6", "M2 + M6", layer_config.m2_m6, True),
 
-        pro_combos = [
-            ("m1_m5", "M1 + M5", layer_config.m1_m5),
-            ("m1_m6", "M1 + M6", layer_config.m1_m6),
-            ("m2_m5", "M2 + M5", layer_config.m2_m5),
-            ("m2_m6", "M2 + M6", layer_config.m2_m6),
-            ("m3_m5", "M3 + M5", layer_config.m3_m5),
-            ("m3_m6", "M3 + M6", layer_config.m3_m6),
-            ("m4_m5", "M4 + M5", layer_config.m4_m5),
-            ("m4_m6", "M4 + M6", layer_config.m4_m6),
-            ("m5_m6", "M5 + M6", layer_config.m5_m6),
+            # M3 Combos
+            ("m3_m4", "M3 + M4", layer_config.m3_m4, False),
+            ("m3_m5", "M3 + M5", layer_config.m3_m5, True),
+            ("m3_m6", "M3 + M6", layer_config.m3_m6, True),
+
+            # M4 Combos
+            ("m4_m5", "M4 + M5", layer_config.m4_m5, True),
+            ("m4_m6", "M4 + M6", layer_config.m4_m6, True),
+
+            # M5 Combos
+            ("m5_m6", "M5 + M6", layer_config.m5_m6, True),
+
+            # Command & Library
+            ("cmd_lib", "Cmd + Lib", layer_config.cmd_lib, False),
         ]
-        for key_id, display_title, bind_obj in pro_combos:
+
+        for key_id, display_title, bind_obj, is_pro in combos_spec:
             row = PaddleRowWidget(display_title, bind_obj)
             row.open_recorder.connect(self._open_macro_recorder)
             row.open_editor.connect(self._open_macro_editor)
             rows_map[key_id] = row
-            pro_combos_layout.addWidget(row)
+            if is_pro:
+                self.pro_buttons_container.register_container(row)
+                row.setVisible(self.pro_buttons_container.isVisible())
+            c_layout.addWidget(row)
 
-        pro_combos_box.setVisible(self.pro_buttons_container.isVisible())
-        c_layout.addWidget(pro_combos_box)
         c_layout.addStretch()
-
         scroll.setWidget(container)
         return scroll
 

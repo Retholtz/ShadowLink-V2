@@ -128,6 +128,13 @@ class TestMainWindow(unittest.TestCase):
             for btn_key in ["m5", "m6", "f1", "f2", "f3", "f4"] + pro_combo_keys:
                 self.assertIn(btn_key, layer_rows)
 
+        # Verify sub-tab title is ' Extra Buttons '
+        layer0_tab = win.main_tabs.widget(0)
+        from PySide6.QtWidgets import QTabWidget
+        sub_tab = layer0_tab.findChild(QTabWidget)
+        self.assertIsNotNone(sub_tab)
+        self.assertEqual(sub_tab.tabText(0), " Extra Buttons ")
+
         # 3. Initially, toggle options should be standard 7 options
         std_options = ["None", "M1", "M2", "M3", "M4", "Command", "Library"]
         t1_items = [win.t1_combo.itemText(i) for i in range(win.t1_combo.count())]
