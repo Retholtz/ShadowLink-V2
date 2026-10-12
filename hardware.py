@@ -159,6 +159,8 @@ class ControllerManager:
 
     def set_active_layer(self, layer_index: int) -> None:
         if 0 <= layer_index < len(self.profile.layers):
+            if self.active_layer_index != layer_index:
+                self._cancel_and_release_all_paddles()
             self.active_layer_index = layer_index
             layer_name = self.profile.layers[layer_index].name
             logger.info(f"Active layer set to: {layer_index + 1} ({layer_name})")
@@ -220,9 +222,11 @@ class ControllerManager:
             self.m1_m2_state, self.m1_m3_state, self.m1_m4_state,
             self.m2_m3_state, self.m2_m4_state, self.m3_m4_state,
             self.cmd_lib_state,
+            *self.std_states,
         ]
         for s in all_states:
             s.cancel_and_release(release_action_fn=keymap.release_key_bind)
+        keymap.release_all_keys()
 
     # --- MAIN SNIFFER THREADS ---
 
@@ -412,23 +416,30 @@ class ControllerManager:
                     if sA and sB and combo_bind.enabled and (name1 not in consumed) and (name2 not in consumed):
                         consumed.add(name1)
                         consumed.add(name2)
-                        if not combo_state.pressed:
-                            stateA.cancel_pending()
-                            stateB.cancel_pending()
-                            if stateA.single_action_fired:
-                                self._release_bind(stateA)
-                            if stateB.single_action_fired:
-                                self._release_bind(stateB)
-                            stateA.combo_consumed = True
-                            stateB.combo_consumed = True
+                        with combo_state._lock:
+                            if not combo_state.pressed:
+                                with stateA._lock:
+                                    stateA.cancel_pending()
+                                    if stateA.single_action_fired:
+                                        self._release_bind(stateA)
+                                        stateA.single_action_fired = False
+                                    stateA.combo_consumed = True
+                                with stateB._lock:
+                                    stateB.cancel_pending()
+                                    if stateB.single_action_fired:
+                                        self._release_bind(stateB)
+                                        stateB.single_action_fired = False
+                                    stateB.combo_consumed = True
 
-                            combo_state.pressed = True
-                            combo_state.single_action_fired = True
-                            self._fire_bind(combo_state, combo_bind)
+                                combo_state.pressed = True
+                                combo_state.single_action_fired = True
+                                self._fire_bind(combo_state, combo_bind)
                     else:
-                        if combo_state.pressed:
-                            self._release_bind(combo_state)
-                            combo_state.pressed = False
+                        with combo_state._lock:
+                            if combo_state.pressed:
+                                self._release_bind(combo_state)
+                                combo_state.pressed = False
+                                combo_state.single_action_fired = False
 
                 handle_combo("M1", debounced_s1, "M2", debounced_s2, self.m1_m2_state, cl.m1_m2, self.m1_state, self.m2_state)
                 handle_combo("M1", debounced_s1, "M3", debounced_s3, self.m1_m3_state, cl.m1_m3, self.m1_state, self.m3_state)
@@ -441,42 +452,49 @@ class ControllerManager:
                 # Handle Singles
                 def handle_single(name: str, state: bool, bs: ButtonState, bind: PaddleBind) -> None:
                     if name in consumed:
-                        if not bs.pressed:
-                            bs.pressed = True
-                        bs.cancel_pending()
-                        if bs.single_action_fired:
-                            self._release_bind(bs)
-                            bs.single_action_fired = False
-                        bs.combo_consumed = True
+                        with bs._lock:
+                            if not bs.pressed:
+                                bs.pressed = True
+                            bs.cancel_pending()
+                            if bs.single_action_fired:
+                                self._release_bind(bs)
+                                bs.single_action_fired = False
+                            bs.combo_consumed = True
                         return
 
                     if state and not bs.pressed:
-                        bs.pressed = True
-                        bs.single_action_fired = False
-                        bs.combo_consumed = False
+                        with bs._lock:
+                            bs.pressed = True
+                            bs.single_action_fired = False
+                            bs.combo_consumed = False
 
-                        if bind.enabled:
-                            buffer_ms = self.profile.combo_buffer_ms
-                            if buffer_ms > 0:
-                                def on_timer_expire() -> None:
-                                    if not bs.combo_consumed:
-                                        bs.single_action_fired = True
-                                        self._fire_bind(bs, bind)
+                            if bind.enabled:
+                                buffer_ms = self.profile.combo_buffer_ms
+                                if buffer_ms > 0:
+                                    def on_timer_expire() -> None:
+                                        with bs._lock:
+                                            if not bs.pressed or bs.combo_consumed or bs.single_action_fired:
+                                                return
+                                            bs.single_action_fired = True
+                                            self._fire_bind(bs, bind)
 
-                                t_task = threading.Timer(buffer_ms / 1000.0, on_timer_expire)
-                                bs.pending_timer = t_task
-                                t_task.start()
-                            else:
-                                bs.single_action_fired = True
-                                self._fire_bind(bs, bind)
+                                    t_task = threading.Timer(buffer_ms / 1000.0, on_timer_expire)
+                                    bs.pending_timer = t_task
+                                    t_task.start()
+                                else:
+                                    bs.single_action_fired = True
+                                    self._fire_bind(bs, bind)
 
                     elif not state and bs.pressed:
-                        bs.cancel_pending()
-                        if bind.enabled and not bs.single_action_fired and not bs.combo_consumed:
-                            self._fire_bind(bs, bind)
-                        self._release_bind(bs)
-                        bs.pressed = False
-                        bs.combo_consumed = False
+                        with bs._lock:
+                            bs.cancel_pending()
+                            if bind.enabled and not bs.single_action_fired and not bs.combo_consumed:
+                                bs.single_action_fired = True
+                                self._fire_bind(bs, bind)
+                            self._release_bind(bs)
+                            bs.pressed = False
+                            bs.combo_consumed = False
+                            bs.single_action_fired = False
 
                 handle_single("M1", debounced_s1, self.m1_state, cl.m1)
                 handle_single("M2", debounced_s2, self.m2_state, cl.m2)
@@ -547,18 +565,21 @@ class ControllerManager:
                     cl = self.current_layer
 
                     def check_std_state(s: bool, bs: ButtonState, bind: PaddleBind) -> None:
-                        if s and not bs.pressed:
-                            bs.pressed = True
-                            bs.single_action_fired = False
-                            if bind.enabled:
-                                bs.single_action_fired = True
-                                self._fire_bind(bs, bind)
-                        elif not s and bs.pressed:
-                            bs.cancel_pending()
-                            if bind.enabled and not bs.single_action_fired:
-                                self._fire_bind(bs, bind)
-                            self._release_bind(bs)
-                            bs.pressed = False
+                        with bs._lock:
+                            if s and not bs.pressed:
+                                bs.pressed = True
+                                bs.single_action_fired = False
+                                if bind.enabled:
+                                    bs.single_action_fired = True
+                                    self._fire_bind(bs, bind)
+                            elif not s and bs.pressed:
+                                bs.cancel_pending()
+                                if bind.enabled and not bs.single_action_fired:
+                                    bs.single_action_fired = True
+                                    self._fire_bind(bs, bind)
+                                self._release_bind(bs)
+                                bs.pressed = False
+                                bs.single_action_fired = False
 
                     check_std_state(s_lb, self.std_states[0], cl.lb)
                     check_std_state(s_rb, self.std_states[1], cl.rb)

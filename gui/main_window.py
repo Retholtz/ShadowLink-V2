@@ -609,6 +609,8 @@ class MainWindow(QMainWindow):
         found = next((p for p in self.all_profiles if p.name == name), None)
         if found:
             self._sync_ui_to_profile()
+            self.active_profile = found
+            self.manager.set_profile(found)
             self._load_profile_into_ui(found)
 
     def _on_new_profile(self) -> None:
@@ -868,6 +870,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_auto_switched(self, new_profile: Profile) -> None:
+        self.active_profile = new_profile
+        self.manager.set_profile(new_profile)
         self._load_profile_into_ui(new_profile)
         self.profile_combo.setCurrentText(new_profile.name)
         show_osd(f"Profile: {new_profile.name}", corner=self.osd_combo.currentText())

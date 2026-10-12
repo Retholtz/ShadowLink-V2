@@ -6,6 +6,7 @@ Provides high-performance ctypes SendInput execution for games and desktop apps.
 
 from __future__ import annotations
 import ctypes
+import threading
 import time
 from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
@@ -83,6 +84,19 @@ _user32 = ctypes.windll.user32
 _SendInput = _user32.SendInput
 _SendInput.argtypes = (ctypes.c_uint, ctypes.POINTER(INPUT), ctypes.c_int)
 _SendInput.restype = ctypes.c_uint
+
+# Extra info signature so external assistants / hooks can recognize ShadowLink-injected events
+SHADOWLINK_EXTRA_INFO = 0x534C4E4B  # 'SLNK' in ASCII
+
+# Global thread-safe registry of keys currently held down by ShadowLink
+_ACTIVE_KEYS: set[str] = set()
+_ACTIVE_KEYS_LOCK = threading.Lock()
+
+
+def get_active_keys() -> set[str]:
+    """Returns a snapshot of key names currently marked as down/held by ShadowLink."""
+    with _ACTIVE_KEYS_LOCK:
+        return set(_ACTIVE_KEYS)
 
 
 @dataclass(frozen=True)
@@ -208,7 +222,7 @@ _KEY_DEFINITIONS: dict[str, tuple[Optional[int], Optional[int], bool]] = {
     "F21": (0x84, 0x6C, False),
     "F22": (0x85, 0x6D, False),
     "F23": (0x86, 0x6E, False),
-    "F24": (0x87, 0x6F, False),
+    "F24": (0x87, 0x76, False),
 
     # Numpad
     "NumPad 0": (0x60, 0x52, False),
@@ -307,9 +321,13 @@ def send_key_down(key: str) -> bool:
         wScan=scan,
         dwFlags=flags,
         time=0,
-        dwExtraInfo=0,
+        dwExtraInfo=SHADOWLINK_EXTRA_INFO,
     )
-    return _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
+    success = _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
+    if success:
+        with _ACTIVE_KEYS_LOCK:
+            _ACTIVE_KEYS.add(info.name)
+    return success
 
 
 def send_key_up(key: str) -> bool:
@@ -330,9 +348,12 @@ def send_key_up(key: str) -> bool:
         wScan=scan,
         dwFlags=flags,
         time=0,
-        dwExtraInfo=0,
+        dwExtraInfo=SHADOWLINK_EXTRA_INFO,
     )
-    return _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
+    success = _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
+    with _ACTIVE_KEYS_LOCK:
+        _ACTIVE_KEYS.discard(info.name)
+    return success
 
 
 def send_key_tap(key: str, delay_ms: float = 50.0) -> None:
@@ -340,6 +361,40 @@ def send_key_tap(key: str, delay_ms: float = 50.0) -> None:
     if delay_ms > 0:
         time.sleep(delay_ms / 1000.0)
     send_key_up(key)
+
+
+def release_all_keys() -> list[str]:
+    """
+    Safely releases any keys or modifiers currently registered as down/active by ShadowLink.
+    Guarantees paired key-up events fire and cleans up any stuck modifier states.
+    """
+    released: list[str] = []
+    with _ACTIVE_KEYS_LOCK:
+        keys_to_release = list(_ACTIVE_KEYS)
+
+    modifiers = {"Alt", "Ctrl", "Shift", "Win"}
+    non_mods = [k for k in keys_to_release if k not in modifiers]
+    mods = [k for k in keys_to_release if k in modifiers]
+
+    # Release non-modifiers first, then modifiers in safe order
+    for k in non_mods:
+        try:
+            if send_key_up(k):
+                released.append(k)
+        except Exception:
+            pass
+
+    for m in mods:
+        try:
+            if send_key_up(m):
+                released.append(m)
+        except Exception:
+            pass
+
+    with _ACTIVE_KEYS_LOCK:
+        _ACTIVE_KEYS.clear()
+
+    return released
 
 
 def send_mouse_down(btn: str) -> bool:
@@ -351,7 +406,7 @@ def send_mouse_down(btn: str) -> bool:
     inp.union.mi = MOUSEINPUT(
         dx=0, dy=0, mouseData=0,
         dwFlags=info.mouse_event_down,
-        time=0, dwExtraInfo=0,
+        time=0, dwExtraInfo=SHADOWLINK_EXTRA_INFO,
     )
     return _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
 
@@ -365,7 +420,7 @@ def send_mouse_up(btn: str) -> bool:
     inp.union.mi = MOUSEINPUT(
         dx=0, dy=0, mouseData=0,
         dwFlags=info.mouse_event_up,
-        time=0, dwExtraInfo=0,
+        time=0, dwExtraInfo=SHADOWLINK_EXTRA_INFO,
     )
     return _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
 
@@ -388,59 +443,101 @@ def send_mouse_delta(dx: int, dy: int) -> bool:
     inp.union.mi = MOUSEINPUT(
         dx=dx, dy=dy, mouseData=0,
         dwFlags=MOUSEEVENTF_MOVE,
-        time=0, dwExtraInfo=0,
+        time=0, dwExtraInfo=SHADOWLINK_EXTRA_INFO,
     )
     return _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
 
 
 # --- PADDLE BIND HIGH-LEVEL INJECTION ---
 
-def press_key_bind(bind: PaddleBind) -> None:
+def press_key_bind(bind: PaddleBind) -> list[str]:
     """
     Press configured modifiers followed by the target key or mouse button.
-    Matches Kotlin pressKeyBind logic.
+    Returns the list of keys/modifiers actually pressed to guarantee paired release.
     """
     if not bind.enabled or bind.key_char.startswith("Xbox_"):
-        return
+        return []
 
+    pressed: list[str] = []
     if bind.win:
-        send_key_down("Win")
+        if send_key_down("Win"):
+            pressed.append("Win")
     if bind.shift:
-        send_key_down("Shift")
+        if send_key_down("Shift"):
+            pressed.append("Shift")
     if bind.ctrl:
-        send_key_down("Ctrl")
+        if send_key_down("Ctrl"):
+            pressed.append("Ctrl")
     if bind.alt:
-        send_key_down("Alt")
+        if send_key_down("Alt"):
+            pressed.append("Alt")
 
     info = get_key_info(bind.key_char)
     if info:
         if info.is_mouse:
-            send_mouse_down(bind.key_char)
+            if send_mouse_down(bind.key_char):
+                pressed.append(bind.key_char)
         else:
-            send_key_down(bind.key_char)
+            if send_key_down(bind.key_char):
+                pressed.append(bind.key_char)
+
+    return pressed
 
 
-def release_key_bind(bind: PaddleBind) -> None:
+def release_key_bind(bind: PaddleBind, keys_to_release: Optional[list[str]] = None) -> None:
     """
-    Release target key or mouse button followed by modifiers in reverse.
-    Matches Kotlin releaseKeyBind logic.
+    Release target key or mouse button followed by modifiers in reverse order.
+    If keys_to_release is provided, guarantees release of exactly what was pressed.
     """
+    if keys_to_release is not None:
+        for k in reversed(keys_to_release):
+            info = get_key_info(k)
+            if info and info.is_mouse:
+                try:
+                    send_mouse_up(k)
+                except Exception:
+                    pass
+            else:
+                try:
+                    send_key_up(k)
+                except Exception:
+                    pass
+        return
+
     if bind.key_char.startswith("Xbox_"):
         return
 
     info = get_key_info(bind.key_char)
     if info:
         if info.is_mouse:
-            send_mouse_up(bind.key_char)
+            try:
+                send_mouse_up(bind.key_char)
+            except Exception:
+                pass
         else:
-            send_key_up(bind.key_char)
+            try:
+                send_key_up(bind.key_char)
+            except Exception:
+                pass
 
     if bind.alt:
-        send_key_up("Alt")
+        try:
+            send_key_up("Alt")
+        except Exception:
+            pass
     if bind.ctrl:
-        send_key_up("Ctrl")
+        try:
+            send_key_up("Ctrl")
+        except Exception:
+            pass
     if bind.shift:
-        send_key_up("Shift")
+        try:
+            send_key_up("Shift")
+        except Exception:
+            pass
     if bind.win:
-        send_key_up("Win")
+        try:
+            send_key_up("Win")
+        except Exception:
+            pass
 

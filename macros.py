@@ -290,8 +290,9 @@ def execute_macro_step(bind: PaddleBind, state: ButtonState) -> None:
 
                 process_macro_token(token, pressed_keys, pressed_mouse)
 
-                # If the step was a tap, clean up happened, but if down/up,
-                # we don't leave down stranded indefinitely
+                # Track any held keys in state so they can be cleaned up on release
+                if pressed_keys:
+                    state.held_keys.extend(list(pressed_keys))
                 state.step_index = (state.step_index + 1) % len(tokens)
             except Exception as e:
                 logger.error(f"Error in step macro: {e}", exc_info=True)

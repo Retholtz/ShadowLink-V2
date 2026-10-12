@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication, QLineEdit
 # Ensure single QApplication instance
 app = QApplication.instance() or QApplication(sys.argv)
 
+import config
 import gui.dialogs
 import gui.main_window
 import gui.osd
@@ -103,13 +104,13 @@ class TestMainWindow(unittest.TestCase):
         mgr = hardware.ControllerManager(p)
         win = gui.main_window.MainWindow(mgr)
         self.assertIsNotNone(win)
-        self.assertIn("v1.1", win.windowTitle())
+        self.assertIn(f"v{config.APP_VERSION}", win.windowTitle())
         self.assertEqual(win.main_tabs.count(), 6)  # 5 layers + 1 settings
         self.assertEqual(len(win.layer_ui_rows), 5)
         # Check window and system tray icon are loaded
         self.assertFalse(win.windowIcon().isNull())
         self.assertFalse(win.tray_icon.icon().isNull())
-        self.assertIn("v1.1", win.tray_icon.toolTip())
+        self.assertIn(f"v{config.APP_VERSION}", win.tray_icon.toolTip())
         self.assertIsNotNone(win.create_shortcut_btn)
         self.assertIsNotNone(win.update_btn)
         self.assertEqual(win.update_btn.text(), "Check for Updates")

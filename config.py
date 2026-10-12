@@ -20,7 +20,7 @@ from models import LayerConfig, PaddleBind, Profile
 
 logger = logging.getLogger("ShadowLink.Config")
 
-APP_VERSION = "1.1"
+APP_VERSION = "1.11"
 GITHUB_REPO = "Retholtz/ShadowLink-V2"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 

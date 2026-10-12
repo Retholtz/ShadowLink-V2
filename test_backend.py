@@ -308,6 +308,119 @@ class TestHardwareLogic(unittest.TestCase):
             keymap.send_key_down = orig_down
             keymap.send_key_up = orig_up
 
+    def test_active_key_tracking_and_release_all(self):
+        # Verify that keymap tracks active keys and release_all_keys releases every key and modifier
+        orig_send = keymap._SendInput
+        released_vk = []
+
+        def mock_send(n, p_inp, sz):
+            inp = getattr(p_inp, '_obj', p_inp)
+            if inp.union.ki.dwFlags & keymap.KEYEVENTF_KEYUP:
+                released_vk.append(inp.union.ki.wVk)
+            return 1
+
+        try:
+            keymap._SendInput = mock_send
+            # Simulate key presses
+            keymap.send_key_down("Shift")
+            keymap.send_key_down("A")
+            active = keymap.get_active_keys()
+            self.assertIn("Shift", active)
+            self.assertIn("A", active)
+
+            # Trigger release_all_keys
+            released = keymap.release_all_keys()
+            self.assertIn("A", released)
+            self.assertIn("Shift", released)
+            self.assertEqual(len(keymap.get_active_keys()), 0, "All active keys must be cleared")
+            # Verify SendInput was called with key up for both
+            self.assertIn(0x10, released_vk)  # VK_SHIFT
+            self.assertIn(0x41, released_vk)  # VK_A
+        finally:
+            keymap._SendInput = orig_send
+            keymap._ACTIVE_KEYS.clear()
+
+    def test_button_state_held_keys_tracking(self):
+        # Verify that ButtonState records pressed keys and guarantees release even if active_bind changes
+        down_events = []
+        up_events = []
+
+        def mock_press(bind):
+            keys = []
+            if bind.shift:
+                keys.append("Shift")
+            if bind.ctrl:
+                keys.append("Ctrl")
+            keys.append(bind.key_char)
+            down_events.extend(keys)
+            return keys
+
+        def mock_release(bind, keys_pressed=None):
+            if keys_pressed:
+                up_events.extend(keys_pressed)
+            else:
+                up_events.append(bind.key_char)
+
+        state = models.ButtonState()
+        bind = models.PaddleBind(key_char="B", shift=True, ctrl=True)
+        state.fire(bind, press_action_fn=mock_press)
+        self.assertEqual(state.held_keys, ["Shift", "Ctrl", "B"])
+
+        # Mutate bind object (simulating user editing layer or config while held)
+        bind.shift = False
+        bind.ctrl = False
+        bind.key_char = "Z"
+
+        # Release must release original held keys
+        state.cancel_and_release(release_action_fn=mock_release)
+        self.assertEqual(up_events, ["Shift", "Ctrl", "B"])
+        self.assertEqual(state.held_keys, [])
+        self.assertFalse(state.pressed)
+
+    def test_cancel_and_release_includes_std_states(self):
+        # Verify that manager._cancel_and_release_all_paddles cancels std_states
+        profile = models.Profile(name="TestStdCancel")
+        mgr = hardware.ControllerManager(profile)
+        # Mark an XInput button and a paddle as pressed
+        mgr.std_states[0].pressed = True
+        mgr.std_states[0].single_action_fired = True
+        mgr.std_states[0].held_keys = ["Shift"]
+        mgr.m1_state.pressed = True
+        mgr.m1_state.held_keys = ["Ctrl"]
+
+        released = []
+        orig_rel = keymap.release_key_bind
+        try:
+            keymap.release_key_bind = lambda b, keys=None: released.extend(keys or [b.key_char])
+            mgr._cancel_and_release_all_paddles()
+            self.assertFalse(mgr.std_states[0].pressed)
+            self.assertFalse(mgr.m1_state.pressed)
+            self.assertIn("Shift", released)
+            self.assertIn("Ctrl", released)
+        finally:
+            keymap.release_key_bind = orig_rel
+
+    def test_shadowlink_extra_info_signature(self):
+        # Verify that SendInput receives SHADOWLINK_EXTRA_INFO for both down and up
+        captured_extra = []
+        orig_send = keymap._SendInput
+
+        def mock_send(n, p_inp, sz):
+            inp = getattr(p_inp, '_obj', p_inp)
+            captured_extra.append(inp.union.ki.dwExtraInfo)
+            return 1
+
+        try:
+            keymap._SendInput = mock_send
+            keymap.send_key_down("Space")
+            keymap.send_key_up("Space")
+            self.assertEqual(len(captured_extra), 2)
+            self.assertEqual(captured_extra[0], keymap.SHADOWLINK_EXTRA_INFO)
+            self.assertEqual(captured_extra[1], keymap.SHADOWLINK_EXTRA_INFO)
+        finally:
+            keymap._SendInput = orig_send
+            keymap._ACTIVE_KEYS.clear()
+
 
 class TestConfig(unittest.TestCase):
     def test_save_and_load_profile(self):

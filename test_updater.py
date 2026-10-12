@@ -147,11 +147,11 @@ class TestZipExtraction(unittest.TestCase):
 class TestLiveGitHubAPI(unittest.TestCase):
     def test_live_repo_query(self):
         """Tests live GitHub query against https://api.github.com/repos/Retholtz/ShadowLink-V2/releases/latest"""
-        has_update, rel_info, msg = check_for_updates(current_version="1.1")
-        # In the live repo, the current latest tag is Version-1.0
+        has_update, rel_info, msg = check_for_updates(current_version=config.APP_VERSION)
+        # In the live repo, the current latest tag is Version-1.0 or Version-1.1
         if rel_info is not None:
-            self.assertEqual(rel_info.tag_name, "Version-1.0")
-            # Since our version is 1.1, has_update must be False
+            self.assertIn(rel_info.tag_name, ("Version-1.0", "Version-1.1"))
+            # Since our version is 1.11, has_update must be False
             self.assertFalse(has_update)
             self.assertIn("up to date", msg)
 

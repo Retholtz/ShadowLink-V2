@@ -199,6 +199,7 @@ class ButtonState:
         self.stop_macro_event: Optional[threading.Event] = None
         self.step_index: int = 0
         self.active_bind: Optional[PaddleBind] = None
+        self.held_keys: list[str] = []
         self.single_action_fired: bool = False
         self.combo_consumed: bool = False
         self.pending_timer: Optional[threading.Timer] = None
@@ -213,7 +214,7 @@ class ButtonState:
     def fire(
         self,
         bind: PaddleBind,
-        press_action_fn: Optional[Callable[[PaddleBind], None]] = None,
+        press_action_fn: Optional[Callable[[PaddleBind], Any]] = None,
         macro_exec_fn: Optional[Callable[[PaddleBind, ButtonState], tuple[threading.Thread, threading.Event]]] = None,
         step_exec_fn: Optional[Callable[[PaddleBind, ButtonState], None]] = None,
     ) -> None:
@@ -235,11 +236,15 @@ class ButtonState:
                         self.stop_macro_event = stop_evt
             else:
                 if press_action_fn:
-                    press_action_fn(bind)
+                    res = press_action_fn(bind)
+                    if isinstance(res, list):
+                        self.held_keys = list(res)
+                    else:
+                        self.held_keys = []
 
     def release_if_active(
         self,
-        release_action_fn: Optional[Callable[[PaddleBind], None]] = None,
+        release_action_fn: Optional[Callable[..., None]] = None,
     ) -> None:
         with self._lock:
             target = self.active_bind
@@ -252,15 +257,26 @@ class ButtonState:
                         self.macro_thread = None
                 else:
                     if release_action_fn:
-                        release_action_fn(target)
+                        try:
+                            release_action_fn(target, self.held_keys if self.held_keys else None)
+                        except TypeError:
+                            release_action_fn(target)
+            elif self.held_keys and release_action_fn:
+                try:
+                    release_action_fn(PaddleBind(), self.held_keys)
+                except Exception:
+                    pass
+            self.held_keys = []
             self.active_bind = None
 
     def cancel_and_release(
         self,
-        release_action_fn: Optional[Callable[[PaddleBind], None]] = None,
+        release_action_fn: Optional[Callable[..., None]] = None,
     ) -> None:
         with self._lock:
             self.cancel_pending()
             self.release_if_active(release_action_fn)
             self.pressed = False
+            self.single_action_fired = False
+            self.combo_consumed = False
 
