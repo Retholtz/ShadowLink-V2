@@ -1,7 +1,7 @@
 {
   "name": "Default",
   "target_process": "",
-  "toggle_button1": "M3",
+  "toggle_button1": "None",
   "toggle_button2": "None",
   "combo_buffer_ms": 30,
   "layers": [
@@ -309,12 +309,12 @@
         "win": false
       },
       "m3_m4": {
-        "enabled": false,
+        "enabled": true,
         "is_macro": false,
         "repeat_macro": false,
         "step_through": false,
         "macro_text": "",
-        "key_char": "A",
+        "key_char": "\\",
         "shift": false,
         "ctrl": false,
         "alt": false,

@@ -20,7 +20,7 @@ from models import LayerConfig, PaddleBind, Profile
 
 logger = logging.getLogger("ShadowLink.Config")
 
-APP_VERSION = "1.11"
+APP_VERSION = "1.12"
 GITHUB_REPO = "Retholtz/ShadowLink-V2"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
@@ -271,6 +271,7 @@ DEFAULT_GLOBAL_CONFIG = {
     "auto_switch": True,
     "start_minimized": False,
     "load_on_startup": False,
+    "run_as_admin": False,
     "dark_mode": True,
     "osd_position": "Bottom Right",
     "scan_interval_ms": 5000,
@@ -471,4 +472,130 @@ def create_desktop_shortcut(target_name: str = "ShadowLink.lnk") -> Path:
     )
     logger.info(f"Created desktop shortcut at: {shortcut_path}")
     return shortcut_path
+
+
+def is_running_as_admin() -> bool:
+    """Returns True if the current process is running with elevated Administrator privileges."""
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except Exception:
+        return False
+
+
+def relaunch_as_admin(arguments: str = "") -> bool:
+    """
+    Relaunches the current executable/script with elevated Administrator privileges via Windows UAC prompt.
+    Returns True if launch request succeeded.
+    """
+    try:
+        if getattr(sys, "frozen", False):
+            target_exe = sys.executable
+            args = arguments
+        else:
+            target_exe = sys.executable
+            main_py = Path(__file__).resolve().parent / "main.py"
+            args = f'"{main_py}" {arguments}'.strip()
+
+        ret = ctypes.windll.shell32.ShellExecuteW(
+            None,
+            "runas",
+            str(target_exe),
+            str(args),
+            str(Path(target_exe).parent),
+            1,  # SW_SHOWNORMAL
+        )
+        return int(ret) > 32
+    except Exception as e:
+        logger.error(f"Failed to relaunch as admin: {e}")
+        return False
+
+
+def configure_startup(enable_startup: bool, run_as_admin: bool = False) -> None:
+    """
+    Configures Windows auto-start on logon.
+    If run_as_admin is True, uses Windows Task Scheduler with HighestAvailable privileges
+    to launch elevated without UAC prompts.
+    If run_as_admin is False, uses standard HKCU Run registry key.
+    """
+    task_name = "ShadowLink"
+    reg_key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+    if getattr(sys, "frozen", False):
+        target_exe = Path(sys.executable)
+        task_tr = f'"{target_exe}"'
+        reg_val = f'"{target_exe}"'
+    else:
+        project_root = Path(__file__).resolve().parent
+        main_py = project_root / "main.py"
+        venv_pythonw = project_root / ".venv" / "Scripts" / "pythonw.exe"
+        if venv_pythonw.exists():
+            exe_path = venv_pythonw
+        else:
+            exe_path = Path(sys.executable).parent / "pythonw.exe"
+            if not exe_path.exists():
+                exe_path = Path(sys.executable)
+        task_tr = f'"{exe_path}" "{main_py}"'
+        reg_val = f'"{exe_path}" "{main_py}"'
+
+    def remove_reg_run():
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_key_path, 0, winreg.KEY_SET_VALUE) as key:
+                try:
+                    winreg.DeleteValue(key, "ShadowLink")
+                except FileNotFoundError:
+                    pass
+        except Exception as e:
+            logger.debug(f"Could not remove Run registry entry: {e}")
+
+    def remove_scheduled_task():
+        try:
+            subprocess.run(
+                ["schtasks", "/Delete", "/TN", task_name, "/F"],
+                capture_output=True,
+                check=False,
+            )
+        except Exception as e:
+            logger.debug(f"Could not delete scheduled task: {e}")
+
+    if not enable_startup:
+        remove_reg_run()
+        remove_scheduled_task()
+        logger.info("Disabled startup (removed registry key and scheduled task)")
+        return
+
+    if run_as_admin:
+        remove_reg_run()
+        try:
+            res = subprocess.run(
+                [
+                    "schtasks", "/Create",
+                    "/TN", task_name,
+                    "/TR", task_tr,
+                    "/SC", "ONLOGON",
+                    "/RL", "HIGHEST",
+                    "/F",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if res.returncode == 0:
+                logger.info("Configured elevated startup via Task Scheduler (/RL HIGHEST)")
+                return
+            else:
+                logger.warning(f"schtasks returned {res.returncode}: {res.stderr.strip()}; falling back to Run registry")
+        except Exception as e:
+            logger.warning(f"Failed to create scheduled task: {e}; falling back to Run registry")
+
+    # Standard user or fallback: use HKCU Run registry
+    remove_scheduled_task()
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, reg_key_path, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, "ShadowLink", 0, winreg.REG_SZ, reg_val)
+        logger.info("Configured startup via HKCU Run registry key")
+    except Exception as e:
+        logger.warning(f"Could not update startup registry: {e}")
+
 

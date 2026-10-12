@@ -114,7 +114,7 @@ SUPPORTED_KEYS = [
     "LClick", "RClick", "MClick",
     "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
     "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
-    "`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "Backspace",
+    "`", "~", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "Backspace",
     "ESC", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
     "F13", "F14", "F15", "F16", "F17", "F18", "F19", "F20", "F21", "F22", "F23", "F24",
     "Insert", "Home", "Page Up", "Delete", "End", "Page Down",
@@ -170,6 +170,7 @@ _KEY_DEFINITIONS: dict[str, tuple[Optional[int], Optional[int], bool]] = {
 
     # Punctuation & Symbols
     "`": (0xC0, 0x29, False),
+    "~": (0xC0, 0x29, False),
     "-": (0xBD, 0x0C, False),
     "=": (0xBB, 0x0D, False),
     ",": (0xBC, 0x33, False),
@@ -279,7 +280,14 @@ for name, (down_flag, up_flag, vk) in _MOUSE_DEFINITIONS.items():
     )
     KEY_MAP[name] = info
     KEY_MAP[name.lower()] = info
-    KEY_MAP[name.lower().replace("click", "")] = info
+    # Only register safe multi-character aliases (do not overwrite single-letter keys 'l', 'r', 'm')
+    alias_map = {
+        "lclick": ["leftclick", "l_click", "left_click"],
+        "rclick": ["rightclick", "r_click", "right_click"],
+        "mclick": ["middleclick", "m_click", "middle_click"],
+    }
+    for alias in alias_map.get(name.lower(), []):
+        KEY_MAP[alias] = info
 
 
 def get_key_info(key: str) -> Optional[KeyInfo]:
@@ -462,7 +470,8 @@ def press_key_bind(bind: PaddleBind) -> list[str]:
     if bind.win:
         if send_key_down("Win"):
             pressed.append("Win")
-    if bind.shift:
+    needs_shift = bind.shift or (bind.key_char == "~")
+    if needs_shift:
         if send_key_down("Shift"):
             pressed.append("Shift")
     if bind.ctrl:
@@ -530,7 +539,7 @@ def release_key_bind(bind: PaddleBind, keys_to_release: Optional[list[str]] = No
             send_key_up("Ctrl")
         except Exception:
             pass
-    if bind.shift:
+    if bind.shift or bind.key_char == "~":
         try:
             send_key_up("Shift")
         except Exception:

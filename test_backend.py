@@ -95,6 +95,30 @@ class TestKeyMap(unittest.TestCase):
         self.assertEqual(info_lc.mouse_event_down, keymap.MOUSEEVENTF_LEFTDOWN)
         self.assertEqual(info_lc.mouse_event_up, keymap.MOUSEEVENTF_LEFTUP)
 
+    def test_tilde_mapping(self):
+        self.assertIn("~", keymap.SUPPORTED_KEYS)
+        info = keymap.get_key_info("~")
+        self.assertIsNotNone(info)
+        self.assertEqual(info.vk_code, 0xC0)
+        self.assertEqual(info.scan_code, 0x29)
+
+    def test_mouse_aliases_do_not_overwrite_keyboard_letters(self):
+        # Ensure 'm', 'l', 'r' map to keyboard letters, not mouse buttons
+        info_m = keymap.get_key_info("m")
+        self.assertIsNotNone(info_m)
+        self.assertEqual(info_m.name, "M")
+        self.assertFalse(info_m.is_mouse)
+
+        info_l = keymap.get_key_info("l")
+        self.assertIsNotNone(info_l)
+        self.assertEqual(info_l.name, "L")
+        self.assertFalse(info_l.is_mouse)
+
+        info_r = keymap.get_key_info("r")
+        self.assertIsNotNone(info_r)
+        self.assertEqual(info_r.name, "R")
+        self.assertFalse(info_r.is_mouse)
+
 
 class TestMacros(unittest.TestCase):
     def test_parse_macro_text_delimiters(self):
@@ -114,6 +138,8 @@ class TestMacros(unittest.TestCase):
         self.assertFalse(macros.is_delay_token("A"))
         self.assertFalse(macros.is_delay_token("Space down"))
         self.assertFalse(macros.is_delay_token("MClick up"))
+        self.assertFalse(macros.is_delay_token("~"))
+        self.assertFalse(macros.is_delay_token("~ down"))
 
     def test_parse_delay_seconds(self):
         self.assertAlmostEqual(macros._parse_delay_seconds("500ms"), 0.5)

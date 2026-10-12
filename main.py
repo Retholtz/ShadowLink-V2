@@ -56,6 +56,13 @@ def main() -> None:
     profiles = config.load_all_profiles()
     global_cfg = config.load_global_config()
 
+    # If run_as_admin is requested and we are not elevated, relaunch elevated via UAC prompt
+    if global_cfg.get("run_as_admin", False) and not config.is_running_as_admin():
+        if "--no-elevation" not in sys.argv:
+            args = " ".join([arg for arg in sys.argv[1:] if arg != "--no-elevation"])
+            if config.relaunch_as_admin(args):
+                sys.exit(0)
+
     target_name = global_cfg.get("active_profile", "Default")
     active_profile = next((p for p in profiles if p.name.lower() == target_name.lower()), profiles[0])
 

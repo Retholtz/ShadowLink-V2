@@ -62,7 +62,18 @@ def is_delay_token(token: str) -> bool:
     """Check if token is a delay (ms, s, or range ~)."""
     t = token.strip().lower()
     if "~" in t:
-        return True
+        parts = t.split("~")
+        if len(parts) == 2:
+            p0 = parts[0].strip().rstrip("ms").rstrip("s").strip()
+            p1 = parts[1].strip().rstrip("ms").rstrip("s").strip()
+            if p0 and p1:
+                try:
+                    float(p0)
+                    float(p1)
+                    return True
+                except ValueError:
+                    pass
+        return False
     if t.endswith("ms"):
         num_str = t[:-2].strip()
         try:

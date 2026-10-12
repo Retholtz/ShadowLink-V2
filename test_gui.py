@@ -4,6 +4,7 @@ Unit test suite for ShadowLink PySide6 GUI.
 
 import sys
 import unittest
+from unittest.mock import patch
 from PySide6.QtWidgets import QApplication, QLineEdit
 
 # Ensure single QApplication instance
@@ -114,6 +115,32 @@ class TestMainWindow(unittest.TestCase):
         self.assertIsNotNone(win.create_shortcut_btn)
         self.assertIsNotNone(win.update_btn)
         self.assertEqual(win.update_btn.text(), "Check for Updates")
+        self.assertIsNotNone(win.run_admin_cb)
+        self.assertEqual(win.run_admin_cb.text(), "Run as Administrator")
+        self.assertIsNotNone(win.startup_cb)
+        self.assertEqual(win.startup_cb.text(), "Load on Startup")
+        self.assertIsNotNone(win.auto_switch_cb)
+        self.assertEqual(win.auto_switch_cb.text(), "Auto-Switch Enabled")
+        self.assertIsNotNone(win.minimized_cb)
+        self.assertEqual(win.minimized_cb.text(), "Start Minimized")
+        self.assertIsNotNone(win.save_btn)
+        self.assertEqual(win.save_btn.text(), "Save/Apply Settings")
+
+        # Test admin toggle prompt rejection reverts checkbox
+        win.run_admin_cb.blockSignals(True)
+        win.run_admin_cb.setChecked(False)
+        win.run_admin_cb.blockSignals(False)
+        with patch.object(gui.main_window.QMessageBox, "question", return_value=gui.main_window.QMessageBox.No):
+            with patch.object(config, "is_running_as_admin", return_value=False):
+                win.run_admin_cb.setChecked(True)
+                self.assertFalse(win.run_admin_cb.isChecked())
+                self.assertFalse(win.global_cfg.get("run_as_admin", False))
+
+        # Test start minimized toggle persists
+        win.minimized_cb.setChecked(True)
+        self.assertTrue(win.global_cfg.get("start_minimized", False))
+        win.minimized_cb.setChecked(False)
+        self.assertFalse(win.global_cfg.get("start_minimized", True))
 
 
 class TestUpdateDialogs(unittest.TestCase):

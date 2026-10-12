@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -106,7 +107,8 @@ class MainWindow(QMainWindow):
         )
         self.manager.set_profile(self.active_profile)
 
-        self.setWindowTitle(f"ShadowLink v{config.APP_VERSION} - ASUS ROG Controller Remapper")
+        admin_suffix = " (Administrator)" if config.is_running_as_admin() else ""
+        self.setWindowTitle(f"ShadowLink v{config.APP_VERSION}{admin_suffix} - ASUS ROG Controller Remapper")
         self.resize(1240, 820)
         self.setMinimumSize(1000, 700)
 
@@ -208,45 +210,73 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(profile_card)
 
         # Card 2: Auto-Switching & App Preferences
-        pref_card = CardPanel("Auto-Switching & App Preferences")
-        pref_layout = QHBoxLayout()
-        pref_layout.setContentsMargins(0, 0, 0, 0)
-        pref_layout.setSpacing(10)
+        pref_card = CardPanel()
+
+        card_content = QHBoxLayout()
+        card_content.setContentsMargins(0, 0, 0, 0)
+        card_content.setSpacing(16)
+
+        # Left Column: Title + Auto-Switch Executable Controls
+        left_layout = QVBoxLayout()
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
+
+        pref_title_lbl = QLabel("Auto-Switching & App Preferences")
+        pref_title_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        left_layout.addWidget(pref_title_lbl)
+
+        exe_row = QHBoxLayout()
+        exe_row.setContentsMargins(0, 0, 0, 0)
+        exe_row.setSpacing(8)
 
         target_lbl = QLabel("Auto-Switch Executable:")
         target_lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        pref_layout.addWidget(target_lbl)
+        exe_row.addWidget(target_lbl)
 
         self.process_field = QLineEdit(self.active_profile.target_process)
         self.process_field.setPlaceholderText("e.g. game.exe")
-        self.process_field.setMinimumWidth(160)
-        pref_layout.addWidget(self.process_field)
+        self.process_field.setMinimumWidth(150)
+        exe_row.addWidget(self.process_field)
 
         self.browse_btn = QPushButton("Browse...")
         self.browse_btn.clicked.connect(self._on_browse_exe)
         self.active_apps_btn = QPushButton("Active Apps...")
         self.active_apps_btn.clicked.connect(self._on_open_active_apps)
-        pref_layout.addWidget(self.browse_btn)
-        pref_layout.addWidget(self.active_apps_btn)
+        exe_row.addWidget(self.browse_btn)
+        exe_row.addWidget(self.active_apps_btn)
+        exe_row.addStretch()
 
-        pref_layout.addSpacing(15)
+        left_layout.addLayout(exe_row)
+        card_content.addLayout(left_layout, stretch=1)
+
+        # Right Column: 2x2 Grid of toggle checkboxes aligned vertically
+        toggles_grid = QGridLayout()
+        toggles_grid.setContentsMargins(0, 0, 0, 0)
+        toggles_grid.setHorizontalSpacing(18)
+        toggles_grid.setVerticalSpacing(8)
+
+        self.startup_cb = QCheckBox("Load on Startup")
+        self.startup_cb.setChecked(self.global_cfg.get("load_on_startup", False))
+        self.startup_cb.toggled.connect(self._on_startup_toggled)
+        toggles_grid.addWidget(self.startup_cb, 0, 0)
+
+        self.run_admin_cb = QCheckBox("Run as Administrator")
+        self.run_admin_cb.setChecked(self.global_cfg.get("run_as_admin", False) or config.is_running_as_admin())
+        self.run_admin_cb.toggled.connect(self._on_run_admin_toggled)
+        toggles_grid.addWidget(self.run_admin_cb, 0, 1)
 
         self.auto_switch_cb = QCheckBox("Auto-Switch Enabled")
         self.auto_switch_cb.setChecked(self.global_cfg.get("auto_switch", True))
         self.auto_switch_cb.toggled.connect(self._on_auto_switch_toggled)
+        toggles_grid.addWidget(self.auto_switch_cb, 1, 0)
 
         self.minimized_cb = QCheckBox("Start Minimized")
         self.minimized_cb.setChecked(self.global_cfg.get("start_minimized", False))
+        self.minimized_cb.toggled.connect(self._on_minimized_toggled)
+        toggles_grid.addWidget(self.minimized_cb, 1, 1)
 
-        self.startup_cb = QCheckBox("Load on Startup")
-        self.startup_cb.setChecked(self.global_cfg.get("load_on_startup", False))
-
-        pref_layout.addWidget(self.auto_switch_cb)
-        pref_layout.addWidget(self.minimized_cb)
-        pref_layout.addWidget(self.startup_cb)
-        pref_layout.addStretch()
-
-        pref_card.main_layout.addLayout(pref_layout)
+        card_content.addLayout(toggles_grid, stretch=0)
+        pref_card.main_layout.addLayout(card_content)
         header_layout.addWidget(pref_card)
 
         main_layout.addLayout(header_layout)
@@ -299,7 +329,7 @@ class MainWindow(QMainWindow):
         footer_layout.addStretch()
 
         # Save Button
-        self.save_btn = QPushButton("Save & Apply Settings")
+        self.save_btn = QPushButton("Save/Apply Settings")
         self.save_btn.setObjectName("accentButton")
         self.save_btn.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         self.save_btn.setMinimumHeight(38)
@@ -612,6 +642,8 @@ class MainWindow(QMainWindow):
             self.active_profile = found
             self.manager.set_profile(found)
             self._load_profile_into_ui(found)
+            self.global_cfg["active_profile"] = found.name
+            save_global_config(self.global_cfg)
 
     def _on_new_profile(self) -> None:
         name, ok = QInputDialog.getText(self, "New Profile", "Enter Profile Name:")
@@ -717,6 +749,7 @@ class MainWindow(QMainWindow):
         self.global_cfg["auto_switch"] = self.auto_switch_cb.isChecked()
         self.global_cfg["start_minimized"] = self.minimized_cb.isChecked()
         self.global_cfg["load_on_startup"] = self.startup_cb.isChecked()
+        self.global_cfg["run_as_admin"] = self.run_admin_cb.isChecked()
         self.global_cfg["osd_position"] = self.osd_combo.currentText()
         self.global_cfg["scan_interval_ms"] = self.scan_combo.currentData()
         save_global_config(self.global_cfg)
@@ -726,27 +759,51 @@ class MainWindow(QMainWindow):
         show_osd(f"Saved: {self.active_profile.name}", corner=self.osd_combo.currentText())
 
     def _update_startup_registry(self, enable: bool) -> None:
-        """Configures Windows Run registry key for launch on login."""
-        try:
-            import winreg
-            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
-                if enable:
-                    if getattr(sys, "frozen", False):
-                        val = f'"{sys.executable}"'
-                    else:
-                        venv_pythonw = Path(sys.executable).parent / "pythonw.exe"
-                        exe_path = str(venv_pythonw) if venv_pythonw.exists() else sys.executable
-                        script_path = str(Path(__file__).resolve().parent.parent / "main.py")
-                        val = f'"{exe_path}" "{script_path}"'
-                    winreg.SetValueEx(key, "ShadowLink", 0, winreg.REG_SZ, val)
+        """Configures Windows Run registry key or Task Scheduler for launch on login."""
+        is_admin = self.run_admin_cb.isChecked() if hasattr(self, "run_admin_cb") else False
+        config.configure_startup(enable_startup=enable, run_as_admin=is_admin)
+
+    def _on_startup_toggled(self, checked: bool) -> None:
+        self.global_cfg["load_on_startup"] = checked
+        save_global_config(self.global_cfg)
+        self._update_startup_registry(checked)
+
+    def _on_minimized_toggled(self, checked: bool) -> None:
+        self.global_cfg["start_minimized"] = checked
+        save_global_config(self.global_cfg)
+
+    def _on_run_admin_toggled(self, checked: bool) -> None:
+        self.global_cfg["run_as_admin"] = checked
+        save_global_config(self.global_cfg)
+        self._update_startup_registry(self.startup_cb.isChecked())
+        if checked and not config.is_running_as_admin():
+            reply = QMessageBox.question(
+                self,
+                "Run as Administrator",
+                "Running as Administrator enables ShadowLink to inject keystrokes and macros "
+                "into elevated games and programs.\n\n"
+                "Would you like to restart ShadowLink elevated as Administrator now?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if reply == QMessageBox.Yes:
+                self._on_save_all()
+                if config.relaunch_as_admin():
+                    QApplication.instance().quit()
                 else:
-                    try:
-                        winreg.DeleteValue(key, "ShadowLink")
-                    except FileNotFoundError:
-                        pass
-        except Exception as e:
-            logger.warning(f"Could not update startup registry: {e}")
+                    self.run_admin_cb.blockSignals(True)
+                    self.run_admin_cb.setChecked(False)
+                    self.run_admin_cb.blockSignals(False)
+                    self.global_cfg["run_as_admin"] = False
+                    save_global_config(self.global_cfg)
+                    self._update_startup_registry(self.startup_cb.isChecked())
+            else:
+                self.run_admin_cb.blockSignals(True)
+                self.run_admin_cb.setChecked(False)
+                self.run_admin_cb.blockSignals(False)
+                self.global_cfg["run_as_admin"] = False
+                save_global_config(self.global_cfg)
+                self._update_startup_registry(self.startup_cb.isChecked())
 
     def _on_create_desktop_shortcut(self) -> None:
         """Handler for manually creating or refreshing the Desktop shortcut."""
@@ -846,6 +903,8 @@ class MainWindow(QMainWindow):
         self.auto_switcher.start()
 
     def _on_auto_switch_toggled(self, checked: bool) -> None:
+        self.global_cfg["auto_switch"] = checked
+        save_global_config(self.global_cfg)
         if checked:
             self._start_auto_switcher()
         else:

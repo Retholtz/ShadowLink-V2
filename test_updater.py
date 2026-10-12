@@ -151,7 +151,7 @@ class TestLiveGitHubAPI(unittest.TestCase):
         # In the live repo, the current latest tag is Version-1.0 or Version-1.1
         if rel_info is not None:
             self.assertIn(rel_info.tag_name, ("Version-1.0", "Version-1.1"))
-            # Since our version is 1.11, has_update must be False
+            # Since our version is 1.12, has_update must be False
             self.assertFalse(has_update)
             self.assertIn("up to date", msg)
 

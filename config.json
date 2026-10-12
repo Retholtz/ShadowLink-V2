@@ -3,6 +3,7 @@
   "auto_switch": true,
   "start_minimized": false,
   "load_on_startup": false,
+  "run_as_admin": false,
   "dark_mode": true,
   "osd_position": "Bottom Right",
   "scan_interval_ms": 5000
