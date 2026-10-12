@@ -119,6 +119,14 @@ class TestKeyMap(unittest.TestCase):
         self.assertEqual(info_r.name, "R")
         self.assertFalse(info_r.is_mouse)
 
+    def test_symbol_aliases(self):
+        self.assertEqual(keymap.get_key_info("backslash").name, "\\")
+        self.assertEqual(keymap.get_key_info("slash").name, "/")
+        self.assertEqual(keymap.get_key_info("dash").name, "-")
+        self.assertEqual(keymap.get_key_info("minus").name, "-")
+        self.assertEqual(keymap.get_key_info("tilde").name, "~")
+        self.assertEqual(keymap.get_key_info("semicolon").name, ";")
+
 
 class TestMacros(unittest.TestCase):
     def test_parse_macro_text_delimiters(self):
@@ -147,6 +155,37 @@ class TestMacros(unittest.TestCase):
         rng = macros._parse_delay_seconds("100ms~200ms")
         self.assertIsNotNone(rng)
         self.assertTrue(0.1 <= rng <= 0.2)
+
+    def test_macro_repeat_execution_and_stop(self):
+        down_events = []
+        up_events = []
+        orig_down = keymap.send_key_down
+        orig_up = keymap.send_key_up
+        keymap.send_key_down = lambda k: down_events.append(k) or True
+        keymap.send_key_up = lambda k: up_events.append(k) or True
+        try:
+            bind = models.PaddleBind(
+                enabled=True,
+                is_macro=True,
+                repeat_macro=True,
+                macro_text="e",
+            )
+            state = models.ButtonState()
+            thread, stop_evt = macros.execute_macro(bind, state)
+
+            # Let it run briefly to perform multiple cycles
+            time.sleep(0.25)
+            # Stop the macro
+            stop_evt.set()
+            thread.join(timeout=0.5)
+
+            # Must have repeated multiple times
+            self.assertGreaterEqual(len(down_events), 2)
+            self.assertEqual(len(down_events), len(up_events))
+            self.assertEqual(down_events[0], "e")
+        finally:
+            keymap.send_key_down = orig_down
+            keymap.send_key_up = orig_up
 
 
 class TestHardwareLogic(unittest.TestCase):
@@ -330,6 +369,66 @@ class TestHardwareLogic(unittest.TestCase):
 
             self.assertIn("Tab", up_keys, "Tab must be released automatically when controller disconnects")
             self.assertFalse(mgr.m2_state.pressed, "m2_state.pressed must be False after release")
+        finally:
+            keymap.send_key_down = orig_down
+            keymap.send_key_up = orig_up
+
+    def test_paddle_hold_does_not_timeout(self):
+        # Verify that holding a paddle does not die/release when no new HID reports arrive
+        down_keys = []
+        up_keys = []
+        orig_down = keymap.send_key_down
+        orig_up = keymap.send_key_up
+        keymap.send_key_down = lambda k: down_keys.append(k) or True
+        keymap.send_key_up = lambda k: up_keys.append(k) or True
+
+        try:
+            profile = models.Profile(name="TestHold")
+            profile.layers[0].m2.enabled = True
+            profile.layers[0].m2.key_char = "\\"
+            profile.combo_buffer_ms = 0
+
+            mgr = hardware.ControllerManager(profile)
+            mgr.controller_link_status = hardware.DeviceStatus.CONNECTED
+
+            class MockContinuousHoldHid:
+                def __init__(self):
+                    self.packets = [
+                        [0xB3, 0, 0, 0, 0, 0, 1, 0, 0] + [0] * 7  # M2 pressed
+                    ]
+                def read(self, size, timeout_ms=0):
+                    if self.packets:
+                        return self.packets.pop(0)
+                    time.sleep(0.01)
+                    return []
+                def close(self):
+                    pass
+
+            mgr._hid_device = MockContinuousHoldHid()
+            mgr._is_hid_connected = True
+            mgr._running = True
+
+            t = threading.Thread(target=mgr._hid_reader_loop, daemon=True)
+            t.start()
+
+            # Wait for press to register
+            deadline = time.time() + 0.25
+            while time.time() < deadline:
+                if "\\" in down_keys:
+                    break
+                time.sleep(0.01)
+
+            self.assertIn("\\", down_keys)
+            self.assertTrue(mgr.m2_state.pressed)
+
+            # Hold for a period where no new packets arrive
+            time.sleep(0.15)
+            # Verify M2 is STILL pressed and NO key-up has been dispatched
+            self.assertTrue(mgr.m2_state.pressed)
+            self.assertEqual(len(up_keys), 0, "Held paddle must not release while still physically held")
+
+            mgr._running = False
+            t.join(timeout=0.5)
         finally:
             keymap.send_key_down = orig_down
             keymap.send_key_up = orig_up

@@ -270,7 +270,6 @@ class ControllerManager:
         prev_debounced_s4 = prev_debounced_cmd = prev_debounced_lib = False
 
         off_delay_sec = 0.020  # 20ms microswitch debounce on release
-        last_valid_paddle_time = 0.0
 
         while self._running:
             if not self._is_hid_connected or self._hid_device is None:
@@ -285,7 +284,6 @@ class ControllerManager:
                 if data and len(data) > 0:
                     if is_valid_paddle_packet(data):
                         self.last_hid_data_time = now
-                        last_valid_paddle_time = now
                         is_alt_mode = (len(data) > 3 and data[3] == 2)
 
                         s1 = (not is_alt_mode) and (data[8] == 1)
@@ -312,10 +310,9 @@ class ControllerManager:
                             self._hid_device = None
                     continue
 
-                # Safety release: if a button is marked held but no report received for >3.0s
-                # (e.g. controller was abruptly switched off or wireless dropped while held), release it cleanly
-                if (s1 or s2 or s3 or s4 or s_cmd or s_lib) and last_valid_paddle_time > 0 and (now - last_valid_paddle_time) > 3.0:
-                    s1 = s2 = s3 = s4 = s_cmd = s_lib = False
+                # Keep HID heartbeat active while any physical paddle is held
+                if s1 or s2 or s3 or s4 or s_cmd or s_lib:
+                    self.last_hid_data_time = now
 
                 # If controller is sleeping or off, ensure inputs do not latch
                 if self.controller_link_status == DeviceStatus.DISCONNECTED:

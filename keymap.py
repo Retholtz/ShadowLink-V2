@@ -290,6 +290,39 @@ for name, (down_flag, up_flag, vk) in _MOUSE_DEFINITIONS.items():
         KEY_MAP[alias] = info
 
 
+_SYMBOL_ALIASES = {
+    "backslash": "\\",
+    "back_slash": "\\",
+    "slash": "/",
+    "forwardslash": "/",
+    "forward_slash": "/",
+    "minus": "-",
+    "dash": "-",
+    "hyphen": "-",
+    "equal": "=",
+    "equals": "=",
+    "comma": ",",
+    "period": ".",
+    "dot": ".",
+    "semicolon": ";",
+    "semi_colon": ";",
+    "quote": "'",
+    "singlequote": "'",
+    "apostrophe": "'",
+    "tilde": "~",
+    "grave": "`",
+    "backquote": "`",
+    "back_quote": "`",
+    "backtick": "`",
+    "leftbracket": "[",
+    "rightbracket": "]",
+    "lbracket": "[",
+    "rbracket": "]",
+    "openbracket": "[",
+    "closebracket": "]",
+}
+
+
 def get_key_info(key: str) -> Optional[KeyInfo]:
     """Retrieve KeyInfo for key name (case-insensitive with fallback aliases)."""
     if not key:
@@ -301,7 +334,12 @@ def get_key_info(key: str) -> Optional[KeyInfo]:
     if k_lower in KEY_MAP:
         return KEY_MAP[k_lower]
     clean = k_lower.replace(" ", "").replace("_", "")
-    return KEY_MAP.get(clean)
+    if clean in KEY_MAP:
+        return KEY_MAP[clean]
+    if clean in _SYMBOL_ALIASES:
+        sym = _SYMBOL_ALIASES[clean]
+        return KEY_MAP.get(sym)
+    return None
 
 
 def is_mouse_key(key: str) -> bool:

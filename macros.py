@@ -13,16 +13,6 @@ import time
 from typing import TYPE_CHECKING, Optional
 
 import keymap
-from keymap import (
-    get_key_info,
-    is_mouse_key,
-    send_key_down,
-    send_key_up,
-    send_mouse_abs,
-    send_mouse_delta,
-    send_mouse_down,
-    send_mouse_up,
-)
 
 if TYPE_CHECKING:
     from models import ButtonState, PaddleBind
@@ -168,7 +158,7 @@ def process_macro_token(
         try:
             x = int(parts[1])
             y = int(parts[2])
-            send_mouse_abs(x, y)
+            keymap.send_mouse_abs(x, y)
         except ValueError:
             pass
         return
@@ -177,7 +167,7 @@ def process_macro_token(
         try:
             dx = int(parts[1])
             dy = int(parts[2])
-            send_mouse_delta(dx, dy)
+            keymap.send_mouse_delta(dx, dy)
         except ValueError:
             pass
         return
@@ -197,42 +187,42 @@ def process_macro_token(
     if key_str.lower().startswith("xbox_"):
         return
 
-    info = get_key_info(key_str)
+    info = keymap.get_key_info(key_str)
     if not info:
         logger.warning(f"Unrecognized macro key token: '{key_str}'")
         return
 
     if info.is_mouse:
         if act == "down":
-            send_mouse_down(key_str)
+            keymap.send_mouse_down(key_str)
             pressed_mouse.add(key_str)
         elif act == "up":
-            send_mouse_up(key_str)
+            keymap.send_mouse_up(key_str)
             pressed_mouse.discard(key_str)
         else:  # TAP
-            send_mouse_down(key_str)
+            keymap.send_mouse_down(key_str)
             pressed_mouse.add(key_str)
             if stop_event is not None:
                 stop_event.wait(0.05)
             else:
                 time.sleep(0.05)
-            send_mouse_up(key_str)
+            keymap.send_mouse_up(key_str)
             pressed_mouse.discard(key_str)
     else:
         if act == "down":
-            send_key_down(key_str)
+            keymap.send_key_down(key_str)
             pressed_keys.add(key_str)
         elif act == "up":
-            send_key_up(key_str)
+            keymap.send_key_up(key_str)
             pressed_keys.discard(key_str)
         else:  # TAP
-            send_key_down(key_str)
+            keymap.send_key_down(key_str)
             pressed_keys.add(key_str)
             if stop_event is not None:
                 stop_event.wait(0.05)
             else:
                 time.sleep(0.05)
-            send_key_up(key_str)
+            keymap.send_key_up(key_str)
             pressed_keys.discard(key_str)
 
 
@@ -250,8 +240,11 @@ def execute_macro(
         pressed_keys: set[str] = set()
         pressed_mouse: set[str] = set()
         try:
+            tokens = parse_macro_text(bind.macro_text)
+            if not tokens:
+                return
+
             while not stop_event.is_set():
-                tokens = parse_macro_text(bind.macro_text)
                 for token in tokens:
                     if stop_event.is_set():
                         break
@@ -259,18 +252,23 @@ def execute_macro(
 
                 if not bind.repeat_macro:
                     break
+
+                # If repeating and macro does not end with an explicit delay token,
+                # provide a brief 30ms release gap so games and apps cleanly register each key cycle
+                if not is_delay_token(tokens[-1]):
+                    stop_event.wait(0.03)
         except Exception as e:
             logger.error(f"Error in macro thread: {e}", exc_info=True)
         finally:
             # Clean up any keys or mouse buttons held down by the macro
             for k in list(pressed_keys):
                 try:
-                    send_key_up(k)
+                    keymap.send_key_up(k)
                 except Exception:
                     pass
             for m in list(pressed_mouse):
                 try:
-                    send_mouse_up(m)
+                    keymap.send_mouse_up(m)
                 except Exception:
                     pass
 
